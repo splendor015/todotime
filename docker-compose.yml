@@ -1,0 +1,14 @@
+services:
+  todotime:
+    build: .
+    ports:
+      - "3030:3030"
+    environment:
+      PORT: 3030
+      JWT_SECRET: change-this-in-production
+    volumes:
+      - todotime-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  todotime-data:
