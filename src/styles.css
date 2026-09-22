@@ -83,7 +83,7 @@ nav { flex: 1; }
 .unplanned-row { grid-template-columns: 50px repeat(7, minmax(95px, 1fr)); min-height: 42px; }
 .unplanned-row > .time-head { padding-top: 9px; }
 .unplanned-cell { padding: 4px; min-height: 42px; }
-.calendar-scroll { grid-template-columns: 50px 1fr; height: 576px; max-height: 576px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.calendar-scroll { grid-template-columns: 50px 1fr; height: 576px; max-height: 576px; overscroll-behavior-y: auto; scrollbar-gutter: stable; }
 .time-axis div { height: 24px; padding: 4px 7px 0 0; font-size: 8px; }
 .day-column { min-height: 576px; background: repeating-linear-gradient(to bottom, transparent 0, transparent 23px, #edf1f0 24px); }
 .hour-cell { height: 24px; }

@@ -165,29 +165,58 @@ const expandTasks = (rows, from, to, currentUserId) => {
       }
       continue;
     }
-    if (!recurrence || !row.start_at) {
+    if (!recurrence) {
       const day = row.task_date || (row.start_at ? row.start_at.slice(0, 10) : null);
       if (!day || (day >= from && day <= to)) output.push(publicTask(row, currentUserId));
       continue;
     }
-    const base = new Date(row.start_at);
-    const duration = row.end_at ? new Date(row.end_at).getTime() - base.getTime() : 0;
+
+    // A recurring task may be timed or unscheduled. For an unscheduled task,
+    // task_date is the recurrence anchor and each occurrence stays unscheduled.
+    // Previously the missing start_at caused the task to bypass recurrence
+    // expansion entirely, so it only appeared on its original date.
+    const base = row.start_at
+      ? new Date(row.start_at)
+      : row.task_date
+        ? new Date(`${row.task_date}T00:00:00+08:00`)
+        : null;
+    if (!base || Number.isNaN(base.getTime())) {
+      output.push(publicTask(row, currentUserId));
+      continue;
+    }
+    const hasStartTime = Boolean(row.start_at);
+    const duration = hasStartTime && row.end_at ? new Date(row.end_at).getTime() - base.getTime() : 0;
     const until = recurrence.until ? new Date(`${recurrence.until}T23:59:59+08:00`) : toDate;
     const cursor = new Date(base);
+    const monthlyDay = base.getUTCDate();
+    const interval = Math.max(1, Number(recurrence.interval) || 1);
+    let occurrenceIndex = 0;
     let guard = 0;
     while (cursor <= toDate && cursor <= until && guard < 730) {
       if (cursor >= fromDate || new Date(cursor.getTime() + duration) >= fromDate) {
         const day = formatLocalDate(cursor);
         const exception = db.prepare('SELECT * FROM task_exceptions WHERE task_id=? AND occurrence_date=?').get(row.id, day);
         if (!exception || exception.action !== 'skip') {
-          const occurrence = { ...row, task_date: day, start_at: cursor.toISOString(), end_at: row.end_at ? new Date(cursor.getTime() + duration).toISOString() : null };
+          const occurrence = {
+            ...row,
+            task_date: day,
+            start_at: hasStartTime ? cursor.toISOString() : null,
+            end_at: hasStartTime && row.end_at ? new Date(cursor.getTime() + duration).toISOString() : null
+          };
           if (exception?.override_json) Object.assign(occurrence, JSON.parse(exception.override_json));
           output.push(publicTask(occurrence, currentUserId, day));
         }
       }
-      if (recurrence.frequency === 'daily') cursor.setUTCDate(cursor.getUTCDate() + (Number(recurrence.interval) || 1));
-      else if (recurrence.frequency === 'weekly') cursor.setUTCDate(cursor.getUTCDate() + 7 * (Number(recurrence.interval) || 1));
-      else if (recurrence.frequency === 'monthly') cursor.setUTCMonth(cursor.getUTCMonth() + (Number(recurrence.interval) || 1));
+      if (recurrence.frequency === 'daily') cursor.setUTCDate(cursor.getUTCDate() + interval);
+      else if (recurrence.frequency === 'weekly') cursor.setUTCDate(cursor.getUTCDate() + 7 * interval);
+      else if (recurrence.frequency === 'monthly') {
+        occurrenceIndex += interval;
+        const monthIndex = base.getUTCMonth() + occurrenceIndex;
+        const targetYear = base.getUTCFullYear() + Math.floor(monthIndex / 12);
+        const targetMonth = monthIndex % 12;
+        const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+        cursor.setUTCFullYear(targetYear, targetMonth, Math.min(monthlyDay, lastDay));
+      }
       else break;
       guard += 1;
     }
