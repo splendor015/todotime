@@ -147,3 +147,81 @@ nav { flex: 1; }
 .notifications-empty { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #a2b0ae; }
 .notifications-empty h3 { margin: 12px 0 5px; color: #607573; font-size: 14px; }
 .notifications-empty p { margin: 0; color: #a3b0ae; font-size: 11px; }
+
+/* Readability pass: larger type and stronger text contrast for normal viewing. */
+:root { --muted: #647876; --line: #d8e3e1; }
+body { color: #294648; font-size: 14px; }
+input::placeholder, textarea::placeholder { color: #7a8d8a; opacity: 1; }
+.auth-eyebrow, .eyebrow, .drawer-kicker { color: #32736d; font-size: 11px; }
+.auth-card h1 { color: #203f41; font-size: 32px; }
+.auth-card input { font-size: 15px; height: 48px; }
+.primary-button { font-size: 13px; height: 42px; }
+.primary-button.full { height: 50px; }
+.auth-switch { color: #637875; font-size: 13px; }
+.auth-note { color: #6f8582; font-size: 12px; }
+.side-brand { font-size: 19px; }
+.space-switcher strong { color: #345355; font-size: 13px; }
+.space-switcher small { color: #637976; font-size: 11px; }
+.nav-label { color: #708683; font-size: 11px; }
+.nav-item { color: #526b6a; font-size: 13px; height: 42px; }
+.nav-count { color: #607875; font-size: 11px; }
+.profile-row strong { color: #365557; font-size: 12px; }
+.profile-row small { color: #718683; font-size: 11px; }
+.breadcrumb { color: #718683; font-size: 13px; }
+.breadcrumb strong { color: #315254; }
+.search-box input { color: #294648; font-size: 12px; }
+.content-area { padding-top: 36px; }
+.page-heading h1 { color: #203f41; font-size: 31px; }
+.page-heading p { color: #617775; font-size: 13px; }
+.today-button { color: #4e6c69; font-size: 12px; height: 38px; }
+.add-button { height: 40px; }
+.summary-strip { height: 92px; }
+.summary-strip small { color: #607875; font-size: 12px; }
+.summary-strip strong { color: #294b4c; font-size: 22px; }
+.summary-strip strong em { color: #718783; font-size: 12px; }
+.summary-tip strong { color: #526c69; font-size: 13px; }
+.summary-tip small { color: #718683; font-size: 12px; }
+.calendar-toolbar { height: 50px; }
+.today-chip { color: #3f6561; font-size: 13px; }
+.calendar-legend { color: #607875; font-size: 11px; }
+.time-head { color: #718582; font-size: 10px; }
+.day-head { color: #607875; font-size: 11px; }
+.day-head b { color: #3f5c5d; font-size: 16px; }
+.time-axis div { color: #718582; font-size: 10px; }
+.timed-task-head { color: #38595a; font-size: 11px; }
+.timed-task > span { color: #607976; font-size: 10px; }
+.timed-tags em { color: #55736f; font-size: 9px; }
+.task-pill span { color: #496563; font-size: 10px; }
+.drawer-head h2 { color: #294c4d; font-size: 23px; }
+.drawer-tabs button { color: #607875; font-size: 13px; }
+.label-block > input, .label-block > textarea, .label-block > select, .form-grid input, .form-grid select { color: #294648; font-size: 13px; }
+label { color: #405b5c; font-size: 13px; }
+.visibility-row strong { color: #496563; font-size: 13px; }
+.visibility-row small { color: #6b817e; font-size: 11px; }
+.recurrence-title { color: #4f6e6b; font-size: 13px; }
+.recurrence-box p { color: #6c827f; font-size: 11px; }
+.scope-select > span { color: #657c79; font-size: 12px; }
+.scope-select button { color: #627a77; font-size: 11px; }
+.ghost-button, .danger-button { font-size: 12px; }
+.comment-meta strong { color: #496563; font-size: 12px; }
+.comment-meta span { color: #718683; font-size: 10px; }
+.comment p { color: #607875; font-size: 12px; }
+.empty-comments { color: #718683; }
+.empty-comments p { font-size: 13px; }
+.trash-note { color: #897653; font-size: 11px; }
+.trash-item strong { color: #496563; font-size: 13px; }
+.trash-item small { color: #718683; font-size: 11px; }
+.settings-intro { color: #607875; font-size: 12px; }
+.month-week-head > div { color: #607875; font-size: 11px; }
+.month-day-number { color: #496563; font-size: 12px; }
+.month-task strong { font-size: 10px; }
+.month-task-time { color: #647c78; font-size: 9px; }
+.month-more { color: #647c78; font-size: 10px; }
+.full-notice-title strong { color: #405d5e; font-size: 13px; }
+.full-notice-title span { font-size: 10px; }
+.full-notice-main p { color: #607875; font-size: 12px; }
+.full-notice-main small { color: #718683; font-size: 11px; }
+.full-notice-task { color: #647c78; font-size: 10px; }
+.notifications-empty { color: #718683; }
+.notifications-empty h3 { color: #496563; font-size: 16px; }
+.notifications-empty p { color: #718683; font-size: 12px; }
