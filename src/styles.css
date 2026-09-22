@@ -83,10 +83,10 @@ nav { flex: 1; }
 .unplanned-row { grid-template-columns: 50px repeat(7, minmax(95px, 1fr)); min-height: 42px; }
 .unplanned-row > .time-head { padding-top: 9px; }
 .unplanned-cell { padding: 4px; min-height: 42px; }
-.calendar-scroll { grid-template-columns: 50px 1fr; height: 576px; max-height: 576px; overscroll-behavior-y: auto; scrollbar-gutter: stable; }
-.time-axis div { height: 24px; padding: 4px 7px 0 0; font-size: 8px; }
-.day-column { min-height: 576px; background: repeating-linear-gradient(to bottom, transparent 0, transparent 23px, #edf1f0 24px); }
-.hour-cell { height: 24px; }
+.calendar-scroll { grid-template-columns: 50px 1fr; height: 510px; max-height: 510px; overscroll-behavior-y: auto; scrollbar-gutter: stable; }
+.time-axis div { height: 30px; padding: 4px 7px 0 0; font-size: 8px; }
+.day-column { min-height: 510px; background: repeating-linear-gradient(to bottom, transparent 0, transparent 29px, #edf1f0 30px); }
+.hour-cell { height: 30px; }
 .timed-task { left: 4px; right: 4px; min-height: 30px; border-radius: 5px; padding: 4px 5px; }
 .timed-task-head { gap: 3px; font-size: 9px; line-height: 1.2; }
 .timed-task > span { font-size: 8px; margin: 2px 0 0 17px; }

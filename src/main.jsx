@@ -16,8 +16,11 @@ const api = async (url, options = {}) => {
 
 const pad = (n) => String(n).padStart(2, '0');
 const SHANGHAI_TZ = 'Asia/Shanghai';
-const CALENDAR_START_HOUR = 0;
-const CALENDAR_HOUR_HEIGHT = 24;
+// The weekly timeline focuses on the practical daytime window. Tasks still
+// keep their original timestamps; only the visible grid starts at 07:00.
+const CALENDAR_START_HOUR = 7;
+const CALENDAR_END_HOUR = 24;
+const CALENDAR_HOUR_HEIGHT = 30;
 const chinaParts = (value, options) => {
   const parts = new Intl.DateTimeFormat('zh-CN', { timeZone: SHANGHAI_TZ, ...options }).formatToParts(value);
   return Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
@@ -125,7 +128,7 @@ function TaskModal({ task, users, onClose, onSaved, onDeleted, toast }) {
       <div className="form-grid"><label>优先级<select value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责对象<select value={form.assignment} onChange={e => set('assignment', e.target.value)}><option value="owner">我负责</option><option value="partner">对方负责</option><option value="both">共同负责</option></select></label></div>
       <label className="label-block">标签<div className="input-with-icon"><Tag size={15} /><input placeholder="生活, 重要（用逗号分隔）" value={form.tags} onChange={e => set('tags', e.target.value)} /></div></label>
       <div className="visibility-row"><div><strong>可见范围</strong><small>{form.visibility === 'private' ? '对方只会看到“私人安排”及占用时间' : '双方都能查看详情'}</small></div><button type="button" className={`toggle ${form.visibility === 'private' ? 'on' : ''}`} onClick={() => set('visibility', form.visibility === 'private' ? 'shared' : 'private')}><span /></button></div>
-      <div className="recurrence-box"><div className="recurrence-title"><RotateCcw size={15} /> 重复安排</div><div className="form-grid"><select value={form.recurrence} onChange={e => set('recurrence', e.target.value)}><option value="none">不重复</option><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></select>{form.recurrence !== 'none' && <input type="date" value={form.recurrenceUntil} onChange={e => set('recurrenceUntil', e.target.value)} />}</div>{form.recurrence !== 'none' && <p>可在编辑时选择只修改本次、此次之后或整个系列。</p>}</div>
+      <div className="recurrence-box"><div className="recurrence-title"><RotateCcw size={15} /> 重复安排</div><div className="form-grid"><select value={form.recurrence} onChange={e => set('recurrence', e.target.value)}><option value="none">不重复</option><option value="daily">每天</option><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option></select>{form.recurrence !== 'none' && <input type="date" value={form.recurrenceUntil} onChange={e => set('recurrenceUntil', e.target.value)} />}</div>{form.recurrence !== 'none' && <p>可在编辑时选择只修改本次、此次之后或整个系列。</p>}</div>
       {isEdit && task.recurrence && <div className="scope-select"><span>应用到</span><div><button type="button" className={scope === 'this' ? 'selected' : ''} onClick={() => setScope('this')}>仅本次</button><button type="button" className={scope === 'future' ? 'selected' : ''} onClick={() => setScope('future')}>本次及以后</button><button type="button" className={scope === 'all' ? 'selected' : ''} onClick={() => setScope('all')}>整个系列</button></div></div>}
       <div className="drawer-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{isEdit && <button type="button" className="danger-button" onClick={remove}><Trash2 size={15} /> 删除</button>}<button className="primary-button" disabled={saving}>{saving ? '保存中…' : '保存日程'}</button></div>
     </form> : <div className="comments-body"><div className="comment-list">{comments.length ? comments.map(c => <div className="comment" key={c.id}><div className="avatar mini" style={{ background: c.userColor }}>{c.userName.slice(0, 1)}</div><div><div className="comment-meta"><strong>{c.userName}</strong><span>{new Date(c.createdAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div><p>{c.body}</p></div></div>) : <div className="empty-comments"><MessageCircle size={23} /><p>还没有评论</p></div>}</div><form className="comment-form" onSubmit={addComment}><input placeholder="写一条评论…" value={comment} onChange={e => setComment(e.target.value)} /><button className="primary-button"><Plus size={15} /></button></form></div>}
@@ -138,7 +141,7 @@ function RecycleBin({ tasks, onRestore, onPermanent, onClose }) {
 
 function Calendar({ tasks, current, onMove, onSelect, onNew, onComplete }) {
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(current, i)), [current]);
-  const hours = Array.from({ length: 24 }, (_, i) => i + CALENDAR_START_HOUR);
+  const hours = Array.from({ length: CALENDAR_END_HOUR - CALENDAR_START_HOUR }, (_, i) => i + CALENDAR_START_HOUR);
   const today = dateKey(new Date());
   const byDay = (key) => tasks.filter(t => taskDayKey(t) === key);
   const timed = (key) => byDay(key).filter(t => !t.allDay && t.startAt);

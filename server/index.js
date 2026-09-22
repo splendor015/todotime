@@ -209,6 +209,7 @@ const expandTasks = (rows, from, to, currentUserId) => {
       }
       if (recurrence.frequency === 'daily') cursor.setUTCDate(cursor.getUTCDate() + interval);
       else if (recurrence.frequency === 'weekly') cursor.setUTCDate(cursor.getUTCDate() + 7 * interval);
+      else if (recurrence.frequency === 'biweekly') cursor.setUTCDate(cursor.getUTCDate() + 14 * interval);
       else if (recurrence.frequency === 'monthly') {
         occurrenceIndex += interval;
         const monthIndex = base.getUTCMonth() + occurrenceIndex;
