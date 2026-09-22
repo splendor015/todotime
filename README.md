@@ -30,6 +30,14 @@ docker compose up -d --build
 
 服务监听 `3030`，数据库通过 Docker volume `todotime-data` 持久化。阿里云上建议再用 Caddy/Nginx 做域名反向代理和 HTTPS，并把 `JWT_SECRET` 改为随机值。
 
+## 云端版本更新
+
+cd /opt/todotime
+git pull --ff-only origin main
+docker compose build --pull=false
+docker compose up -d
+curl https://todotime.me/api/health
+
 ## 重要说明
 
 - 时间按中国标准时间展示，数据库以 ISO 时间保存。
