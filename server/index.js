@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   tags TEXT NOT NULL DEFAULT '[]',
   visibility TEXT NOT NULL DEFAULT 'shared',
   assignment TEXT NOT NULL DEFAULT 'owner',
+  background_schedule INTEGER NOT NULL DEFAULT 0,
+  ignore_day_conflicts INTEGER NOT NULL DEFAULT 0,
   recurrence TEXT,
   recurrence_parent_id INTEGER REFERENCES tasks(id),
   deleted_at TEXT,
@@ -79,6 +81,8 @@ CREATE TABLE IF NOT EXISTS conflict_notifications (
 );
 `);
 try { db.exec('ALTER TABLE tasks ADD COLUMN task_date TEXT'); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE tasks ADD COLUMN background_schedule INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE tasks ADD COLUMN ignore_day_conflicts INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
 
 const purgeExpiredTrash = () => {
   const expired = db.prepare("SELECT id FROM tasks WHERE deleted_at IS NOT NULL AND datetime(deleted_at) < datetime('now', '-30 day')").all();
@@ -121,6 +125,8 @@ const publicTask = (t, currentUserId, occurrenceDate = null) => {
     endAt: isPrivate ? t.end_at : t.end_at,
     taskDate: t.task_date || occurrenceDate || (t.start_at ? t.start_at.slice(0, 10) : null),
     allDay: Boolean(t.all_day),
+    backgroundSchedule: Boolean(t.background_schedule),
+    ignoreDayConflicts: Boolean(t.ignore_day_conflicts),
     status: t.status,
     priority: t.priority,
     tags: isPrivate ? [] : tags,
@@ -358,7 +364,7 @@ app.post('/api/tasks', auth, (req, res) => {
   const b = req.body || {};
   if (!b.title?.trim()) return res.status(400).json({ error: '请输入任务标题' });
   const recurrence = b.recurrence ? JSON.stringify(b.recurrence) : null;
-  const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,task_date,all_day,priority,tags,visibility,assignment,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(req.user.id, b.title.trim(), b.description || '', b.startAt || null, b.endAt || null, b.taskDate || (b.startAt ? b.startAt.slice(0, 10) : null), b.allDay ? 1 : 0, b.priority || 'normal', JSON.stringify(b.tags || []), b.visibility === 'private' ? 'private' : 'shared', b.assignment || 'owner', recurrence);
+  const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,task_date,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(req.user.id, b.title.trim(), b.description || '', b.startAt || null, b.endAt || null, b.taskDate || (b.startAt ? b.startAt.slice(0, 10) : null), b.allDay ? 1 : 0, b.priority || 'normal', JSON.stringify(b.tags || []), b.visibility === 'private' ? 'private' : 'shared', b.assignment || 'owner', b.allDay && b.backgroundSchedule ? 1 : 0, b.allDay && b.ignoreDayConflicts ? 1 : 0, recurrence);
   const row = taskRow(info.lastInsertRowid); notifyOther(req.user.id, 'task_created', '新的日程安排', `${row.owner_name} 添加了「${b.title.trim()}」`, row.id);
   res.status(201).json({ task: publicTask(row, req.user.id) });
 });
@@ -373,6 +379,8 @@ app.put('/api/tasks/:id', auth, (req, res) => {
       if (b[input] !== undefined) overrides[column] = b[input];
     }
     if (b.allDay !== undefined) overrides.all_day = b.allDay ? 1 : 0;
+    if (b.backgroundSchedule !== undefined) overrides.background_schedule = b.allDay && b.backgroundSchedule ? 1 : 0;
+    if (b.ignoreDayConflicts !== undefined) overrides.ignore_day_conflicts = b.allDay && b.ignoreDayConflicts ? 1 : 0;
     if (b.tags !== undefined) overrides.tags = JSON.stringify(b.tags);
     db.prepare(`INSERT INTO task_exceptions(task_id,occurrence_date,action,override_json) VALUES(?,?,?,?) ON CONFLICT(task_id,occurrence_date) DO UPDATE SET action=excluded.action, override_json=excluded.override_json`).run(id, b.occurrenceDate, 'override', JSON.stringify(overrides));
   } else if (scope === 'future' && b.occurrenceDate && row.recurrence) {
@@ -382,7 +390,8 @@ app.put('/api/tasks/:id', auth, (req, res) => {
     const anchorDay = row.start_at ? formatLocalDate(new Date(row.start_at)) : row.task_date;
     const delta = Date.parse(b.occurrenceDate) - Date.parse(anchorDay);
     const shifted = value => value ? new Date(Date.parse(value) + delta).toISOString() : null;
-    const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,task_date,all_day,priority,tags,visibility,assignment,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(row.owner_id, b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? shifted(row.start_at) : b.startAt, b.endAt === undefined ? shifted(row.end_at) : b.endAt, b.taskDate ?? b.occurrenceDate ?? row.task_date, b.allDay === undefined ? row.all_day : (b.allDay ? 1 : 0), b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null));
+    const allDay = b.allDay === undefined ? row.all_day : (b.allDay ? 1 : 0);
+    const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,task_date,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(row.owner_id, b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? shifted(row.start_at) : b.startAt, b.endAt === undefined ? shifted(row.end_at) : b.endAt, b.taskDate ?? b.occurrenceDate ?? row.task_date, allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null));
     // Move future exceptions with the series to avoid stale, duplicate occurrences.
     db.prepare('UPDATE task_exceptions SET task_id=? WHERE task_id=? AND occurrence_date>=?').run(info.lastInsertRowid, id, b.occurrenceDate);
     const newRow = taskRow(info.lastInsertRowid); notifyOther(req.user.id, 'task_updated', '日程已更新', `${newRow.owner_name} 更新了「${newRow.title}」`, newRow.id); return res.json({ task: publicTask(newRow, req.user.id) });
@@ -394,7 +403,8 @@ app.put('/api/tasks/:id', auth, (req, res) => {
       for (const key of ['startAt', 'endAt']) if (b[key]) b[key] = new Date(Date.parse(b[key]) - delta).toISOString();
       if (b.taskDate) b.taskDate = formatLocalDate(new Date(Date.parse(b.taskDate + 'T00:00:00+08:00') - delta));
     }
-    db.prepare(`UPDATE tasks SET title=?,description=?,start_at=?,end_at=?,task_date=?,all_day=?,priority=?,tags=?,visibility=?,assignment=?,recurrence=?,status=?,updated_at=? WHERE id=?`).run(b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? row.start_at : (b.startAt || null), b.endAt === undefined ? row.end_at : (b.endAt || null), b.taskDate ?? (b.startAt ? formatLocalDate(new Date(b.startAt)) : row.task_date), b.allDay === undefined ? row.all_day : (b.allDay ? 1 : 0), b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null), b.status ?? row.status, nowIso(), id);
+    const allDay = b.allDay === undefined ? row.all_day : (b.allDay ? 1 : 0);
+    db.prepare(`UPDATE tasks SET title=?,description=?,start_at=?,end_at=?,task_date=?,all_day=?,priority=?,tags=?,visibility=?,assignment=?,background_schedule=?,ignore_day_conflicts=?,recurrence=?,status=?,updated_at=? WHERE id=?`).run(b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? row.start_at : (b.startAt || null), b.endAt === undefined ? row.end_at : (b.endAt || null), b.taskDate ?? (b.startAt ? formatLocalDate(new Date(b.startAt)) : row.task_date), allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null), b.status ?? row.status, nowIso(), id);
   }
   const updated = taskRow(id); notifyOther(req.user.id, 'task_updated', '日程已更新', `${updated.owner_name} 更新了「${updated.title}」`, id); res.json({ task: publicTask(updated, req.user.id) });
 });

@@ -12,7 +12,7 @@ export function detectConflicts(tasks, userIds, from, to) {
   // actual interval only once. Missing endpoints never imply a made-up duration.
   const unique = new Map();
   for (const task of tasks) {
-    if (task.status === 'done' || task.deletedAt || !task.startAt || !task.endAt) continue;
+    if (task.status === 'done' || task.deletedAt || task.ignoreDayConflicts || !task.startAt || !task.endAt) continue;
     const start = Date.parse(task.startAt);
     const end = Date.parse(task.endAt);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
