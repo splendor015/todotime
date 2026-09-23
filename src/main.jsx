@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   Bell, CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Clock3, Columns3,
   Filter, Flag, LogOut, MessageCircle, MoreHorizontal, Plus, RotateCcw, Search,
-  Settings, Tag, Trash2, UserRound, X, Check, LockKeyhole, Eye, EyeOff
+  Settings, Tag, Trash2, UserRound, X, Check, LockKeyhole, Eye, EyeOff, TriangleAlert, Info
 } from 'lucide-react';
 import './styles.css';
 
@@ -55,11 +55,55 @@ const monthGridRange = (date) => {
   return { start, end, count };
 };
 const shiftMonth = (date, amount) => new Date(date.getFullYear(), date.getMonth() + amount, 1);
-const taskDayKey = (task) => task.occurrenceDate || task.taskDate || (task.startAt ? dateKey(new Date(task.startAt)) : null);
+const taskDayKey = (task) => task.allDay && !task.recurrence ? task.occurrenceDate || task.taskDate : (task.startAt ? dateKey(new Date(task.startAt)) : task.taskDate || task.occurrenceDate);
+const SHARED_TASK_COLOR = '#7468b2';
+const taskColor = (task) => task.assignment === 'both' ? SHARED_TASK_COLOR : (task.ownerColor || '#267e77');
+const assignmentLabel = (assignment) => assignment === 'both' ? '共同负责' : assignment === 'partner' ? '对方负责' : '我负责';
+const taskDateLabel = (task) => {
+  const day = taskDayKey(task);
+  const date = day ? parseKey(day) : null;
+  const dateText = date ? `${date.getMonth() + 1}月${date.getDate()}日` : '未安排日期';
+  const timeText = task.allDay ? '全天' : task.startAt ? chinaTime(new Date(task.startAt)) : '待安排';
+  return `${dateText} · ${timeText}`;
+};
 
 function Toast({ message, onClose }) {
   useEffect(() => { const timer = setTimeout(onClose, 3500); return () => clearTimeout(timer); }, [onClose]);
   return <div className="toast"><CircleCheck size={17} /> <span>{message}</span><button onClick={onClose}><X size={15} /></button></div>;
+}
+
+const scheduleIdentity = task => `${task.id}:${task.recurrence ? task.occurrenceDate || '' : ''}`;
+const scheduleTitle = type => type === 'schedule_conflict' ? '同一负责人被重复安排' : '双方时间重叠';
+const saveMessage = (data, success) => {
+  const conflicts = data.conflicts || [];
+  if (conflicts.some(c => c.type === 'schedule_conflict')) return `${success}，但同一负责人有重复安排，请查看时间检查`;
+  if (conflicts.length) return `${success}，双方时间有重叠（不视为冲突）`;
+  return success;
+};
+function ScheduleBadge({ task }) {
+  if (!task.scheduleType) return null;
+  const conflict = task.scheduleType === 'schedule_conflict';
+  return <span className={`schedule-badge ${task.scheduleType}`} title={scheduleTitle(task.scheduleType)} aria-label={scheduleTitle(task.scheduleType)}>{conflict ? <TriangleAlert size={12} /> : <Info size={12} />}</span>;
+}
+function SchedulePanel({ conflicts, users, onSelect, notice, onDismiss }) {
+  return <section className="schedule-panel" aria-label="时间检查">
+    <div className="schedule-panel-head"><strong><Clock3 size={16} />时间检查</strong><small>检查当前周／月的全部安排，不受筛选影响 · 仅提示，不阻止保存</small></div>
+    {notice && <div className="schedule-save-notice" role="status"><span>{saveMessage(notice, '日程已保存')}。本次检查：{notice.checkedRange?.from} 至 {notice.checkedRange?.to}（90 天）；切换日期可查看其他时段。</span><button className="icon-button" aria-label="关闭保存检查结果" onClick={onDismiss}><X size={15} /></button></div>}
+    {notice?.conflicts?.length > 0 && <details className="schedule-saved-details"><summary>查看本次保存涉及的 {notice.conflicts.length} 处重叠（含当前视图之外）</summary><div className="schedule-list">{notice.conflicts.map(c => <div className="schedule-item" key={c.key}><strong>{scheduleTitle(c.type)}</strong><time>{chinaDateTimeLabel(new Date(c.startAt))} — {chinaDateTimeLabel(new Date(c.endAt))}</time><small>请切换到上述日期查看当前安排</small></div>)}</div></details>}
+    <div className="schedule-groups">{['schedule_conflict', 'schedule_overlap'].map(type => {
+      const items = conflicts.filter(c => c.type === type);
+      return <details key={type} className={`schedule-group ${type}`} open={type === 'schedule_conflict' && items.length > 0}>
+        <summary>{type === 'schedule_conflict' ? <TriangleAlert size={15} /> : <Info size={15} />}<strong>{scheduleTitle(type)}</strong><span>{items.length} 处</span></summary>
+        <p>{type === 'schedule_conflict' ? '相同负责人在同一时间有多项未完成安排，建议调整。' : '双方分别有安排，仅供协调空闲时间，不代表安排有误。'}</p>
+        <div className="schedule-list">{items.length ? items.map(c => <div className="schedule-item" key={c.key}>
+          <time>{chinaDateTimeLabel(new Date(c.startAt))} — {chinaDateTimeLabel(new Date(c.endAt))}</time>
+          {c.responsibleIds.length > 0 && <small>重复安排的负责人：{c.responsibleIds.map(id => users.find(u => u.id === id)?.displayName || '成员').join('、')}</small>}
+          <div>{c.tasks.map((task, index) => <React.Fragment key={`${task.occurrenceId}-${index}`}>{index > 0 && <span> 与 </span>}<button type="button" onClick={() => onSelect(task)}>{task.isPrivateMasked && <LockKeyhole size={12} />}{task.title}</button></React.Fragment>)}</div>
+        </div>) : <small>当前视图没有此类重叠</small>}</div>
+      </details>;
+    })}</div>
+    <p className="schedule-footnote">仅检查具有开始和结束时间的未完成日程（含全天及重复安排）；首尾相接不算重叠，待安排任务不推测占用时长。</p>
+  </section>;
 }
 
 function AuthScreen({ onAuthed }) {
@@ -89,13 +133,15 @@ function AuthScreen({ onAuthed }) {
   </main>;
 }
 
-function TaskModal({ task, users, onClose, onSaved, onDeleted, toast }) {
+function TaskModal({ task, users, currentUserId, onClose, onSaved, onDeleted, toast }) {
   const isEdit = Boolean(task?.id);
+  const creator = users.find(user => user.id === (task?.ownerId || currentUserId));
+  const otherMember = users.find(user => user.id !== creator?.id);
   const initial = useMemo(() => {
     const start = task?.startAt ? new Date(task.startAt) : null; const end = task?.endAt ? new Date(task.endAt) : null;
     return {
-      title: task?.isPrivateMasked ? '' : (task?.title || ''), description: task?.description || '', date: task?.occurrenceDate || task?.taskDate || (start ? dateKey(start) : dateKey(new Date())),
-      endDate: task?.endDate || (end ? dateKey(end) : (task?.occurrenceDate || task?.taskDate || (start ? dateKey(start) : dateKey(new Date())))),
+      title: task?.isPrivateMasked ? '' : (task?.title || ''), description: task?.description || '', date: start ? dateKey(start) : task?.occurrenceDate || task?.taskDate || task?.date || dateKey(new Date()),
+      endDate: task?.endDate || (end ? dateKey(end) : (task?.occurrenceDate || task?.taskDate || task?.date || (start ? dateKey(start) : dateKey(new Date())))),
       start: task?.start || (start ? chinaTime(start) : ''), end: task?.end || (end ? chinaTime(end) : ''), allDay: task?.allDay || false,
       priority: task?.priority || 'normal', tags: (task?.tags || []).join(', '), visibility: task?.visibility || 'shared', assignment: task?.assignment || 'owner',
       recurrence: task?.recurrence ? task.recurrence.frequency : 'none', recurrenceUntil: task?.recurrence?.until || '', interval: task?.recurrence?.interval || 1
@@ -110,7 +156,7 @@ function TaskModal({ task, users, onClose, onSaved, onDeleted, toast }) {
     setSaving(true);
     const recurrence = form.recurrence !== 'none' ? { frequency: form.recurrence, interval: Number(form.interval) || 1, until: form.recurrenceUntil || null } : null;
     const payload = { title: form.visibility === 'private' && !form.title.trim() ? '私人安排' : form.title, description: form.description, startAt: form.allDay ? isoAt(form.date, '00:00') : (form.start ? isoAt(form.date, form.start) : null), endAt: form.allDay ? isoAt(form.endDate || form.date, '23:59') : (form.end ? isoAt(form.endDate || form.date, form.end) : null), taskDate: form.date, allDay: form.allDay, priority: form.priority, tags: form.tags.split(',').map(t => t.trim()).filter(Boolean), visibility: form.visibility, assignment: form.assignment, recurrence, scope, occurrenceDate: task?.occurrenceDate };
-    try { const data = await api(isEdit ? `/tasks/${task.id}` : '/tasks', { method: isEdit ? 'PUT' : 'POST', body: JSON.stringify(payload) }); onSaved(data.task); toast(isEdit ? '日程已更新' : '日程已添加'); onClose(); }
+    try { const data = await api(isEdit ? `/tasks/${task.id}` : '/tasks', { method: isEdit ? 'PUT' : 'POST', body: JSON.stringify(payload) }); onSaved(data.task, data); toast(saveMessage(data, isEdit ? '日程已更新' : '日程已添加')); onClose(); }
     catch (err) { toast(err.message); } finally { setSaving(false); }
   };
   const remove = async () => { if (!confirm('将这条日程移入回收站？')) return; try { await api(`/tasks/${task.id}`, { method: 'DELETE' }); onDeleted(task.id); toast('已移入回收站'); onClose(); } catch (err) { toast(err.message); } };
@@ -125,7 +171,7 @@ function TaskModal({ task, users, onClose, onSaved, onDeleted, toast }) {
       <label className="checkbox-line"><input type="checkbox" checked={form.allDay} onChange={e => set('allDay', e.target.checked)} /> 全天任务</label>
       {!form.allDay && <div className="form-grid"><label>开始时间<input type="time" value={form.start} onChange={e => set('start', e.target.value)} /></label><label>结束时间<input type="time" value={form.end} onChange={e => set('end', e.target.value)} /></label></div>}
       <div className="section-divider" />
-      <div className="form-grid"><label>优先级<select value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责对象<select value={form.assignment} onChange={e => set('assignment', e.target.value)}><option value="owner">我负责</option><option value="partner">对方负责</option><option value="both">共同负责</option></select></label></div>
+      <div className="form-grid"><label>优先级<select value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责对象<select value={form.assignment} onChange={e => set('assignment', e.target.value)}><option value="owner">{creator?.displayName || '创建者'}负责</option><option value="partner">{otherMember?.displayName || '另一位成员'}负责</option><option value="both">共同负责</option></select></label></div>
       <label className="label-block">标签<div className="input-with-icon"><Tag size={15} /><input placeholder="生活, 重要（用逗号分隔）" value={form.tags} onChange={e => set('tags', e.target.value)} /></div></label>
       <div className="visibility-row"><div><strong>可见范围</strong><small>{form.visibility === 'private' ? '对方只会看到“私人安排”及占用时间' : '双方都能查看详情'}</small></div><button type="button" className={`toggle ${form.visibility === 'private' ? 'on' : ''}`} onClick={() => set('visibility', form.visibility === 'private' ? 'shared' : 'private')}><span /></button></div>
       <div className="recurrence-box"><div className="recurrence-title"><RotateCcw size={15} /> 重复安排</div><div className="form-grid"><select value={form.recurrence} onChange={e => set('recurrence', e.target.value)}><option value="none">不重复</option><option value="daily">每天</option><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option></select>{form.recurrence !== 'none' && <input type="date" value={form.recurrenceUntil} onChange={e => set('recurrenceUntil', e.target.value)} />}</div>{form.recurrence !== 'none' && <p>可在编辑时选择只修改本次、此次之后或整个系列。</p>}</div>
@@ -155,7 +201,7 @@ function Calendar({ tasks, current, onMove, onSelect, onNew, onComplete }) {
   };
   const drop = (e, key, hour) => { e.preventDefault(); const id = e.dataTransfer.getData('task'); if (id) { const task = tasks.find(t => t.occurrenceId === id || String(t.id) === id); if (task) onMove(task, key, hour); } };
   return <div className="calendar-wrap">
-    <div className="calendar-toolbar"><div className="today-chip">{dateLabel(current)} – {dateLabel(days[6])}</div><div className="calendar-legend"><span><i className="legend-dot self" />我的安排</span><span><i className="legend-dot partner" />对方安排</span><span><i className="legend-dot shared" />共同安排</span></div></div>
+    <div className="calendar-toolbar"><div className="today-chip">{dateLabel(current)} – {dateLabel(days[6])}</div><div className="calendar-legend"><span><i className="legend-dot self" />我的安排</span><span><i className="legend-dot partner" />对方安排</span><span><i className="legend-dot shared" />共同负责</span></div></div>
     <div className="week-head"><div className="time-head"><Clock3 size={15} /></div>{days.map((day, i) => <div key={dateKey(day)} className={`day-head ${dateKey(day) === today ? 'is-today' : ''}`}><span>周{weekday[i]}</span><b>{day.getDate()}</b></div>)}</div>
     <div className="unplanned-row"><div className="time-head">待安排</div>{days.map(day => <div key={dateKey(day)} className="unplanned-cell" onDragOver={e => e.preventDefault()} onDrop={e => drop(e, dateKey(day), null)}>{unscheduled(dateKey(day)).map(t => <TaskPill key={t.occurrenceId} task={t} onSelect={onSelect} onComplete={onComplete} />)}</div>)}</div>
     <div className="calendar-scroll"><div className="time-axis">{hours.map(h => <div key={h}>{timeLabel(h)}</div>)}</div><div className="grid-area">{days.map(day => <div className={`day-column ${dateKey(day) === today ? 'today-column' : ''}`} key={dateKey(day)}>{hours.map(h => <div className="hour-cell" key={h} onDragOver={e => e.preventDefault()} onDrop={e => drop(e, dateKey(day), h)} onDoubleClick={() => onNew(dateKey(day), `${pad(h)}:00`)} />)}{timed(dateKey(day)).map(t => <TimedTask key={t.occurrenceId} task={t} position={position(t)} onSelect={onSelect} onComplete={onComplete} />)}</div>)}</div></div>
@@ -173,7 +219,7 @@ function MonthCalendar({ tasks, current, onSelect, onNew, onComplete }) {
     return aTime - bTime;
   });
   return <div className="month-view">
-    <div className="calendar-toolbar"><div className="today-chip">{new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long' }).format(current)}</div><div className="calendar-legend"><span><i className="legend-dot self" />我的安排</span><span><i className="legend-dot partner" />对方安排</span><span><i className="legend-dot shared" />共同安排</span></div></div>
+    <div className="calendar-toolbar"><div className="today-chip">{new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long' }).format(current)}</div><div className="calendar-legend"><span><i className="legend-dot self" />我的安排</span><span><i className="legend-dot partner" />对方安排</span><span><i className="legend-dot shared" />共同负责</span></div></div>
     <div className="month-week-head">{weekday.map(day => <div key={day}>周{day}</div>)}</div>
     <div className="month-grid">{days.map(day => {
       const key = dateKey(day); const dayTasks = byDay(key); const inMonth = `${day.getFullYear()}-${day.getMonth()}` === monthKey;
@@ -187,14 +233,28 @@ function MonthCalendar({ tasks, current, onSelect, onNew, onComplete }) {
 
 function MonthTask({ task, onSelect, onComplete }) {
   const time = task.allDay ? '全天' : (task.startAt ? chinaTime(new Date(task.startAt)) : '待安排');
-  return <div className={`month-task ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''}`} style={{ '--task-color': task.ownerColor }} onClick={() => onSelect(task)}>
+  return <div className={`month-task ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ '--task-color': taskColor(task) }} onClick={() => onSelect(task)}>
     <button onClick={event => { event.stopPropagation(); onComplete(task); }} className="month-check">{task.status === 'done' && <Check size={9} />}</button>
-    <span className="month-task-time">{time}</span><strong>{task.title}</strong>{task.priority === 'high' && <Flag size={10} className="priority-flag" />}
+    <span className="month-task-time">{time}</span><strong>{task.title}</strong><ScheduleBadge task={task} />{task.priority === 'high' && <Flag size={10} className="priority-flag" />}
   </div>;
 }
 
-function TaskPill({ task, onSelect, onComplete }) { return <div className={`task-pill ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''}`} style={{ '--task-color': task.ownerColor }} draggable onDragStart={e => e.dataTransfer.setData('task', task.occurrenceId)} onClick={() => onSelect(task)}><button onClick={e => { e.stopPropagation(); onComplete(task); }} className="check-button">{task.status === 'done' && <Check size={11} />}</button><span>{task.title}</span>{task.priority === 'high' && <Flag size={11} className="priority-flag" />}</div>; }
-function TimedTask({ task, position, onSelect, onComplete }) { return <div className={`timed-task ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''}`} style={{ top: position.top, height: position.height, '--task-color': task.ownerColor }} draggable onDragStart={e => e.dataTransfer.setData('task', task.occurrenceId)} onClick={() => onSelect(task)}><div className="timed-task-head"><button onClick={e => { e.stopPropagation(); onComplete(task); }} className="check-button">{task.status === 'done' && <Check size={11} />}</button><strong>{task.title}</strong><MoreHorizontal size={14} /></div><span>{task.startAt && chinaTime(new Date(task.startAt))}{task.endAt && ` – ${chinaTime(new Date(task.endAt))}`}</span>{task.tags?.length > 0 && <div className="timed-tags">{task.tags.slice(0, 2).map(tag => <em key={tag}>{tag}</em>)}</div>}</div>; }
+function TaskPill({ task, onSelect, onComplete }) { return <div className={`task-pill ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ '--task-color': taskColor(task) }} draggable onDragStart={e => e.dataTransfer.setData('task', task.occurrenceId)} onClick={() => onSelect(task)}><button onClick={e => { e.stopPropagation(); onComplete(task); }} className="check-button">{task.status === 'done' && <Check size={11} />}</button><span>{task.title}</span><ScheduleBadge task={task} />{task.priority === 'high' && <Flag size={11} className="priority-flag" />}</div>; }
+function TimedTask({ task, position, onSelect, onComplete }) { return <div className={`timed-task ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ top: position.top, height: position.height, '--task-color': taskColor(task) }} draggable onDragStart={e => e.dataTransfer.setData('task', task.occurrenceId)} onClick={() => onSelect(task)}><div className="timed-task-head"><button onClick={e => { e.stopPropagation(); onComplete(task); }} className="check-button">{task.status === 'done' && <Check size={11} />}</button><strong>{task.title}</strong><ScheduleBadge task={task} />{task.priority === 'high' && <Flag size={11} className="priority-flag" />}<MoreHorizontal size={14} /></div><span>{task.startAt && chinaTime(new Date(task.startAt))}{task.endAt && ` – ${chinaTime(new Date(task.endAt))}`}</span>{task.tags?.length > 0 && <div className="timed-tags">{task.tags.slice(0, 2).map(tag => <em key={tag}>{tag}</em>)}</div>}</div>; }
+
+function PriorityPanel({ tasks, onSelect }) {
+  const priorityTasks = [...tasks]
+    .filter(task => task.priority === 'high' && task.status !== 'done')
+    .sort((a, b) => `${taskDayKey(a) || '9999'}${a.startAt || ''}`.localeCompare(`${taskDayKey(b) || '9999'}${b.startAt || ''}`));
+  const visibleTasks = priorityTasks.slice(0, 6);
+  return <section className={`priority-panel ${priorityTasks.length ? '' : 'is-empty'}`}>
+    <div className="priority-panel-head">
+      <div className="priority-panel-title"><span className="priority-panel-icon"><Flag size={16} /></span><div><strong>高优先级待办</strong><small>当前视图中需要优先处理的未完成事项</small></div></div>
+      <span className="priority-panel-count">{priorityTasks.length} 项</span>
+    </div>
+    {visibleTasks.length ? <div className="priority-task-list">{visibleTasks.map(task => <button type="button" className={`priority-task ${task.assignment === 'both' ? 'shared-task' : ''}`} style={{ '--task-color': taskColor(task) }} key={task.occurrenceId} onClick={() => onSelect(task)}><span className="priority-task-bar" /><span className="priority-task-content"><strong>{task.title}</strong><small>{taskDateLabel(task)}</small></span><span className={`assignment-chip ${task.assignment}`}>{assignmentLabel(task.assignment)}</span></button>)}{priorityTasks.length > visibleTasks.length && <span className="priority-more">还有 {priorityTasks.length - visibleTasks.length} 项，请切换到对应日期查看</span>}</div> : <div className="priority-empty">当前视图没有未完成的高优先级待办</div>}
+  </section>;
+}
 
 const notificationDateLabel = (value) => {
   const normalized = value?.includes('T') ? value : `${value?.replace(' ', 'T')}Z`;
@@ -207,24 +267,32 @@ function NotificationsPage({ notifications, onRead, onReadAll, onBack }) {
   return <section className="content-area notifications-page">
     <div className="page-heading"><div><div className="eyebrow">SHARED SPACE · NOTIFICATIONS</div><h1>通知</h1><p>这里集中显示共享空间里的全部动态。</p></div><div className="heading-actions"><button className="today-button" onClick={onReadAll} disabled={!unreadCount}>全部已读</button><button className="primary-button add-button" onClick={onBack}><CalendarDays size={16} />返回日历</button></div></div>
     <div className="notification-summary"><div className="notification-summary-icon"><Bell size={20} /></div><div><strong>{notifications.length}</strong><span>条通知</span></div><div className="notification-summary-divider" /><div><strong>{unreadCount}</strong><span>条未读</span></div></div>
-    <div className="notification-page-list">{notifications.length ? notifications.map(notification => <article key={notification.id} className={`full-notice ${notification.read ? '' : 'unread'}`} onClick={() => !notification.read && onRead(notification.id)}><div className="full-notice-icon"><Bell size={17} /></div><div className="full-notice-main"><div className="full-notice-title"><strong>{notification.title}</strong>{!notification.read && <span>未读</span>}</div>{notification.body && <p>{notification.body}</p>}<small>{notificationDateLabel(notification.createdAt)}</small></div>{notification.taskId && <span className="full-notice-task">关联日程</span>}</article>) : <div className="notifications-empty"><Bell size={28} /><h3>暂时没有通知</h3><p>当共享空间发生日程或评论变化时，会显示在这里。</p></div>}</div>
+    <div className="notification-page-list">{notifications.length ? notifications.map(notification => <article key={notification.id} className={`full-notice ${notification.read ? '' : 'unread'} ${notification.type}`} onClick={() => !notification.read && onRead(notification.id)}><div className="full-notice-icon"><Bell size={17} /></div><div className="full-notice-main"><div className="full-notice-title"><strong>{notification.title}</strong>{!notification.read && <span>未读</span>}</div>{notification.body && <p>{notification.body}</p>}<small>{notificationDateLabel(notification.createdAt)}</small></div>{notification.taskId && <span className="full-notice-task">关联日程</span>}</article>) : <div className="notifications-empty"><Bell size={28} /><h3>暂时没有通知</h3><p>当共享空间发生日程或评论变化时，会显示在这里。</p></div>}</div>
   </section>;
 }
 
 function App() {
   const [session, setSession] = useState(null); const [loading, setLoading] = useState(true); const [tasks, setTasks] = useState([]); const [users, setUsers] = useState([]); const [notifications, setNotifications] = useState([]); const [activePage, setActivePage] = useState('calendar'); const [viewMode, setViewMode] = useState('week'); const [current, setCurrent] = useState(monday(new Date())); const [modal, setModal] = useState(null); const [toastMessage, setToastMessage] = useState(''); const [filter, setFilter] = useState('all'); const [search, setSearch] = useState(''); const [showTrash, setShowTrash] = useState(false); const [trash, setTrash] = useState([]); const [showReset, setShowReset] = useState(false);
   const notify = (message) => setToastMessage(message);
-  const load = async (s = current) => {
+  const [conflicts, setConflicts] = useState([]);
+  const [scheduleNotice, setScheduleNotice] = useState(null);
+  const load = async (s = current, viewerId = session?.user?.id) => {
     const range = viewMode === 'month' ? monthGridRange(s) : { start: s, end: addDays(s, 6) };
     const from = dateKey(range.start); const to = dateKey(range.end);
     const [taskData, userData, noteData] = await Promise.all([api(`/tasks?from=${from}&to=${to}`), api('/users'), api('/notifications')]);
     try {
-      const key = 'todotime_seen_notifications'; const seen = JSON.parse(localStorage.getItem(key) || '[]');
-      const fresh = noteData.notifications.filter(n => !seen.includes(n.id));
-      if (seen.length && window.Notification?.permission === 'granted') fresh.slice(0, 3).forEach(n => new Notification(n.title, { body: n.body || '共享空间有新的日程变化' }));
-      localStorage.setItem(key, JSON.stringify([...new Set([...seen, ...noteData.notifications.map(n => n.id)])].slice(-100)));
+      // Per-account watermark: an initially empty inbox must not suppress the
+      // first real notification, and old notifications must not be replayed.
+      const key = `todotime_notifications_watermark_${viewerId}`;
+      const previous = localStorage.getItem(key);
+      const fresh = noteData.notifications.filter(n => n.id > Number(previous || 0) && !n.read);
+      if (previous !== null && window.Notification?.permission === 'granted') {
+        const ordered = fresh.sort((a, b) => Number(b.type === 'schedule_conflict') - Number(a.type === 'schedule_conflict') || b.id - a.id);
+        ordered.slice(0, 3).forEach(n => new Notification(n.title, { body: n.body || '共享空间有新的日程变化', tag: `todotime-${viewerId}-${n.id}` }));
+      }
+      localStorage.setItem(key, String(Math.max(Number(previous || 0), 0, ...noteData.notifications.map(n => n.id))));
     } catch { /* browser notifications are optional */ }
-    setTasks(taskData.tasks); setUsers(userData.users); setNotifications(noteData.notifications);
+    setTasks(taskData.tasks); setConflicts(taskData.conflicts || []); setUsers(userData.users); setNotifications(noteData.notifications);
   };
   const openNotifications = async () => {
     if (window.Notification && window.Notification.permission === 'default') { try { await window.Notification.requestPermission(); } catch { /* optional */ } }
@@ -236,7 +304,7 @@ function App() {
   const markAllNotificationsRead = async () => {
     try { await api('/notifications/read', { method: 'POST', body: JSON.stringify({}) }); setNotifications(old => old.map(notification => ({ ...notification, read: true }))); } catch (error) { notify(error.message); }
   };
-  useEffect(() => { api('/auth/me').then(data => { setSession(data); load().catch(err => notify(err.message)); }).catch(() => {}).finally(() => setLoading(false)); }, []);
+  useEffect(() => { api('/auth/me').then(data => { setSession(data); load(current, data.user.id).catch(err => notify(err.message)); }).catch(() => {}).finally(() => setLoading(false)); }, []);
   useEffect(() => { if (session) load(current).catch(err => notify(err.message)); }, [current, viewMode]);
   useEffect(() => {
     if (!session) return undefined;
@@ -250,25 +318,36 @@ function App() {
   const goToday = () => setCurrent(viewMode === 'month' ? monthStart(new Date()) : monday(new Date()));
   const goPrevious = () => setCurrent(viewMode === 'month' ? shiftMonth(current, -1) : addDays(current, -7));
   const goNext = () => setCurrent(viewMode === 'month' ? shiftMonth(current, 1) : addDays(current, 7));
-  const visibleTasks = tasks.filter(t => filter === 'all' || (filter === 'mine' && t.ownerId === session?.user?.id) || (filter === 'partner' && t.ownerId !== session?.user?.id)).filter(t => !search || t.title.toLowerCase().includes(search.toLowerCase()) || t.tags?.some(tag => tag.toLowerCase().includes(search.toLowerCase())));
+  const visibleTasks = tasks.map(task => ({ ...task, scheduleType: conflicts.some(c => c.type === 'schedule_conflict' && c.tasks.some(t => scheduleIdentity(t) === scheduleIdentity(task))) ? 'schedule_conflict' : conflicts.some(c => c.tasks.some(t => scheduleIdentity(t) === scheduleIdentity(task))) ? 'schedule_overlap' : null })).filter(t => filter === 'all' || (filter === 'mine' && t.ownerId === session?.user?.id) || (filter === 'partner' && t.ownerId !== session?.user?.id)).filter(t => !search || t.title.toLowerCase().includes(search.toLowerCase()) || t.tags?.some(tag => tag.toLowerCase().includes(search.toLowerCase())));
   const currentMonthKey = dateKey(current).slice(0, 7);
   const summaryTasks = viewMode === 'month'
     ? visibleTasks.filter(task => taskDayKey(task)?.slice(0, 7) === currentMonthKey)
     : visibleTasks;
-  const saveTask = (task) => { setTasks(old => { const index = old.findIndex(t => t.occurrenceId === task.occurrenceId || String(t.id) === String(task.id)); if (index < 0) return [...old, task]; const next = [...old]; next[index] = task; return next; }); load(current).catch(() => {}); };
-  const moveTask = async (task, key, hour) => { const start = new Date(task.startAt || `${key}T09:00:00+08:00`); const minutes = chinaClockMinutes(start) % 60; const startAt = `${key}T${pad(hour)}:${pad(minutes)}:00+08:00`; let endAt = null; if (task.endAt) { const duration = new Date(task.endAt) - new Date(task.startAt); endAt = new Date(new Date(startAt).getTime() + duration).toISOString(); } try { await api(`/tasks/${task.id}`, { method: 'PUT', body: JSON.stringify({ startAt, endAt, title: task.title, description: task.description, allDay: task.allDay, priority: task.priority, tags: task.tags, visibility: task.visibility, assignment: task.assignment, scope: task.recurrence ? 'this' : 'all', occurrenceDate: task.occurrenceDate }) }); notify('时间已调整'); load(current); } catch (err) { notify(err.message); } };
-  const complete = async (task) => { try { const d = await api(`/tasks/${task.id}/complete`, { method: 'POST', body: JSON.stringify({ occurrenceDate: task.occurrenceDate }) }); setTasks(old => old.map(t => (t.occurrenceId === task.occurrenceId ? { ...t, status: d.task.status } : t))); } catch (err) { notify(err.message); } };
+  const partnerUser = users.find(user => user.id !== session?.user?.id);
+  const saveTask = (_task, data) => { setScheduleNotice(data?.checkedRange ? { conflicts: data.conflicts || [], checkedRange: data.checkedRange } : null); load(current).catch(err => notify(err.message)); };
+  const moveTask = async (task, key, hour) => {
+    if (task.isPrivateMasked) return notify('私人安排只能由创建者调整');
+    const start = new Date(task.startAt || `${key}T09:00:00+08:00`);
+    const startAt = hour === null ? null : isoAt(key, `${pad(hour)}:${pad(chinaClockMinutes(start) % 60)}`);
+    const duration = task.startAt && task.endAt ? new Date(task.endAt) - new Date(task.startAt) : null;
+    const endAt = startAt && duration !== null ? new Date(new Date(startAt).getTime() + duration).toISOString() : null;
+    try {
+      const data = await api(`/tasks/${task.id}`, { method: 'PUT', body: JSON.stringify({ startAt, endAt, taskDate: key, allDay: false, scope: task.recurrence ? 'this' : 'all', occurrenceDate: task.occurrenceDate }) });
+      saveTask(data.task, data); notify(saveMessage(data, '时间已调整'));
+    } catch (err) { notify(err.message); }
+  };
+  const complete = async (task) => { if (task.isPrivateMasked) return notify('私人安排只能由创建者调整'); try { const data = await api(`/tasks/${task.id}/complete`, { method: 'POST', body: JSON.stringify({ occurrenceDate: task.occurrenceDate }) }); setScheduleNotice(null); await load(current); } catch (err) { notify(err.message); } };
   const openTrash = async () => { try { const d = await api('/tasks?deleted=1'); setTrash(d.tasks); setShowTrash(true); } catch (err) { notify(err.message); } };
-  const logout = async () => { await api('/auth/logout', { method: 'POST' }); setSession(null); setActivePage('calendar'); };
+  const logout = async () => { await api('/auth/logout', { method: 'POST' }); setSession(null); setTasks([]); setConflicts([]); setScheduleNotice(null); setNotifications([]); setActivePage('calendar'); };
   if (loading) return <div className="loading-screen"><div className="brand-mark"><CalendarDays size={26} /></div><span>正在打开你的日历…</span></div>;
-  if (!session) return <AuthScreen onAuthed={data => { setSession(data); load().catch(() => {}); }} />;
+  if (!session) return <AuthScreen onAuthed={data => { setSession(data); load(current, data.user.id).catch(() => {}); }} />;
   return <div className="app-shell">
-    <aside className="sidebar"><div className="side-brand"><div className="brand-mark small"><CalendarDays size={19} /></div><span>todotime</span></div><div className="space-switcher"><div className="space-icon">2</div><div><strong>共享空间</strong><small>两位成员 · 私人</small></div><ChevronRight size={15} /></div><nav><div className="nav-label">工作台</div><button className={`nav-item ${activePage === 'calendar' ? 'active' : ''}`} onClick={() => setActivePage('calendar')}><CalendarDays size={17} />日历<span className="nav-count">{viewMode === 'week' ? '周' : '月'}</span></button><button className="nav-item" onClick={openTrash}><Trash2 size={17} />回收站</button><button className={`nav-item ${activePage === 'notifications' ? 'active' : ''}`} onClick={openNotifications}><Bell size={17} />通知{notifications.some(n => !n.read) && <i className="notice-dot" />}</button><div className="nav-label second">视图</div><button className={`nav-item ${filter === 'mine' ? 'subactive' : ''}`} onClick={() => setFilter(filter === 'mine' ? 'all' : 'mine')}><span className="member-dot" style={{ background: session.user.color }} />我的安排</button><button className={`nav-item ${filter === 'partner' ? 'subactive' : ''}`} onClick={() => setFilter(filter === 'partner' ? 'all' : 'partner')}><span className="member-dot partner-dot" />对方安排</button><button className="nav-item" onClick={() => setFilter('all')}><Columns3 size={17} />全部显示</button></nav><div className="sidebar-bottom"><button className="nav-item" onClick={() => setShowReset(true)}><Settings size={17} />空间设置</button><div className="profile-row"><div className="avatar" style={{ background: session.user.color }}>{session.user.displayName.slice(0, 1)}</div><div><strong>{session.user.displayName}</strong><small>{session.user.role === 'admin' ? '管理员' : '成员'}</small></div><button className="icon-button" onClick={logout}><LogOut size={15} /></button></div></div></aside>
+    <aside className="sidebar"><div className="side-brand"><div className="brand-mark small"><CalendarDays size={19} /></div><span>todotime</span></div><div className="space-switcher"><div className="space-icon">2</div><div><strong>共享空间</strong><small>两位成员 · 私人</small></div><ChevronRight size={15} /></div><nav><div className="nav-label">工作台</div><button className={`nav-item ${activePage === 'calendar' ? 'active' : ''}`} onClick={() => setActivePage('calendar')}><CalendarDays size={17} />日历<span className="nav-count">{viewMode === 'week' ? '周' : '月'}</span></button><button className="nav-item" onClick={openTrash}><Trash2 size={17} />回收站</button><button className={`nav-item ${activePage === 'notifications' ? 'active' : ''}`} onClick={openNotifications}><Bell size={17} />通知{notifications.some(n => !n.read) && <i className="notice-dot" />}</button><div className="nav-label second">视图</div><button className={`nav-item ${filter === 'mine' ? 'subactive' : ''}`} onClick={() => setFilter(filter === 'mine' ? 'all' : 'mine')}><span className="member-dot" style={{ background: session.user.color }} />我的安排</button><button className={`nav-item ${filter === 'partner' ? 'subactive' : ''}`} onClick={() => setFilter(filter === 'partner' ? 'all' : 'partner')}><span className="member-dot partner-dot" style={{ background: partnerUser?.color || '#d87b4d' }} />对方安排</button><button className="nav-item" onClick={() => setFilter('all')}><Columns3 size={17} />全部显示</button></nav><div className="sidebar-bottom"><button className="nav-item" onClick={() => setShowReset(true)}><Settings size={17} />空间设置</button><div className="profile-row"><div className="avatar" style={{ background: session.user.color }}>{session.user.displayName.slice(0, 1)}</div><div><strong>{session.user.displayName}</strong><small>{session.user.role === 'admin' ? '管理员' : '成员'}</small></div><button className="icon-button" onClick={logout}><LogOut size={15} /></button></div></div></aside>
     <main className="main-content"><header className="topbar"><div className="breadcrumb"><span>{activePage === 'notifications' ? '通知' : '日历'}</span><ChevronRight size={14} /><strong>{activePage === 'notifications' ? '全部通知' : (viewMode === 'week' ? '本周安排' : '本月安排')}</strong></div><div className="top-actions">{activePage === 'notifications' ? <button className="primary-button add-button" onClick={() => setActivePage('calendar')}><CalendarDays size={16} />返回日历</button> : <><div className="search-box"><Search size={16} /><input placeholder="搜索日程、标签…" value={search} onChange={e => setSearch(e.target.value)} /></div><button className="icon-button notification-button" onClick={openNotifications}><Bell size={18} />{notifications.some(n => !n.read) && <i />}</button><button className="primary-button add-button" onClick={() => setModal({ date: dateKey(new Date()) })}><Plus size={17} />新建日程</button></>}</div></header>
-      {activePage === 'notifications' ? <NotificationsPage notifications={notifications} onRead={markNotificationRead} onReadAll={markAllNotificationsRead} onBack={() => setActivePage('calendar')} /> : <section className="content-area"><div className="page-heading"><div><div className="eyebrow">{new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long' }).format(current)}</div><h1>日历</h1></div><div className="heading-actions"><div className="view-switch" aria-label="切换日历视图"><button className={viewMode === 'week' ? 'active' : ''} onClick={() => changeView('week')}>周</button><button className={viewMode === 'month' ? 'active' : ''} onClick={() => changeView('month')}>月</button></div><button className="today-button" onClick={goToday}>回到今天</button><div className="week-nav"><button className="icon-button" onClick={goPrevious}><ChevronLeft size={17} /></button><button className="icon-button" onClick={goNext}><ChevronRight size={17} /></button></div></div></div><div className="summary-strip"><div><span className="summary-icon teal"><CalendarDays size={17} /></span><div><small>{viewMode === 'week' ? '本周计划' : '本月计划'}</small><strong>{summaryTasks.length} <em>项</em></strong></div></div><div><span className="summary-icon orange"><Clock3 size={17} /></span><div><small>共同安排</small><strong>{summaryTasks.filter(t => t.assignment === 'both').length} <em>项</em></strong></div></div><div><span className="summary-icon purple"><CircleCheck size={17} /></span><div><small>已完成</small><strong>{summaryTasks.filter(t => t.status === 'done').length} <em>项</em></strong></div></div><div className="summary-tip"><span>✦</span><div><strong>高优先级待办</strong><small>{summaryTasks.filter(t => t.priority === 'high' && t.status !== 'done').length} 项未完成</small></div></div></div><div className="calendar-card">{viewMode === 'week' ? <Calendar tasks={visibleTasks} current={current} onMove={moveTask} onSelect={setModal} onNew={(date, start) => setModal({ date, start })} onComplete={complete} /> : <MonthCalendar tasks={visibleTasks} current={current} onSelect={setModal} onNew={(date, start) => setModal({ date, start })} onComplete={complete} />}</div></section>}
+      {activePage === 'notifications' ? <NotificationsPage notifications={notifications} onRead={markNotificationRead} onReadAll={markAllNotificationsRead} onBack={() => setActivePage('calendar')} /> : <section className="content-area"><div className="page-heading"><div><div className="eyebrow">{new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long' }).format(current)}</div><h1>日历</h1></div><div className="heading-actions"><div className="view-switch" aria-label="切换日历视图"><button className={viewMode === 'week' ? 'active' : ''} onClick={() => changeView('week')}>周</button><button className={viewMode === 'month' ? 'active' : ''} onClick={() => changeView('month')}>月</button></div><button className="today-button" onClick={goToday}>回到今天</button><div className="week-nav"><button className="icon-button" onClick={goPrevious}><ChevronLeft size={17} /></button><button className="icon-button" onClick={goNext}><ChevronRight size={17} /></button></div></div></div><div className="summary-strip"><div><span className="summary-icon teal"><CalendarDays size={17} /></span><div><small>{viewMode === 'week' ? '本周计划' : '本月计划'}</small><strong>{summaryTasks.length} <em>项</em></strong></div></div><div><span className="summary-icon orange"><Clock3 size={17} /></span><div><small>共同负责</small><strong>{summaryTasks.filter(t => t.assignment === 'both').length} <em>项</em></strong></div></div><div><span className="summary-icon purple"><CircleCheck size={17} /></span><div><small>已完成</small><strong>{summaryTasks.filter(t => t.status === 'done').length} <em>项</em></strong></div></div><div className="summary-tip"><span className="summary-priority-icon"><Flag size={16} /></span><div><strong>高优先级待办</strong><small>{summaryTasks.filter(t => t.priority === 'high' && t.status !== 'done').length} 项未完成</small></div></div></div><SchedulePanel conflicts={conflicts} users={users} onSelect={task => task.isPrivateMasked ? notify('这是对方的私人安排，仅显示占用时间') : setModal(task)} notice={scheduleNotice} onDismiss={() => setScheduleNotice(null)} /><PriorityPanel tasks={summaryTasks} onSelect={setModal} /><div className="calendar-card">{viewMode === 'week' ? <Calendar tasks={visibleTasks} current={current} onMove={moveTask} onSelect={setModal} onNew={(date, start) => setModal({ date, start })} onComplete={complete} /> : <MonthCalendar tasks={visibleTasks} current={current} onSelect={setModal} onNew={(date, start) => setModal({ date, start })} onComplete={complete} />}</div></section>}
     </main>
-    {modal && <TaskModal task={modal} users={users} onClose={() => setModal(null)} onSaved={saveTask} onDeleted={id => setTasks(tasks.filter(t => t.id !== id))} toast={notify} />}
-    {showTrash && <RecycleBin tasks={trash} onClose={() => setShowTrash(false)} onRestore={async id => { await api(`/tasks/${id}/restore`, { method: 'POST' }); setTrash(trash.filter(t => t.id !== id)); load(current); notify('日程已恢复'); }} onPermanent={async id => { if (confirm('永久删除后无法恢复，确定继续吗？')) { await api(`/tasks/${id}/permanent`, { method: 'DELETE' }); setTrash(trash.filter(t => t.id !== id)); notify('已永久删除'); } }} />}
+    {modal && <TaskModal task={modal} users={users} currentUserId={session.user.id} onClose={() => setModal(null)} onSaved={saveTask} onDeleted={id => { setTasks(tasks.filter(t => t.id !== id)); setScheduleNotice(null); load(current).catch(err => notify(err.message)); }} toast={notify} />}
+    {showTrash && <RecycleBin tasks={trash} onClose={() => setShowTrash(false)} onRestore={async id => { const data = await api(`/tasks/${id}/restore`, { method: 'POST' }); setTrash(trash.filter(t => t.id !== id)); saveTask(data.task, data); notify(saveMessage(data, '日程已恢复')); }} onPermanent={async id => { if (confirm('永久删除后无法恢复，确定继续吗？')) { await api(`/tasks/${id}/permanent`, { method: 'DELETE' }); setTrash(trash.filter(t => t.id !== id)); notify('已永久删除'); } }} />}
     {showReset && <ResetModal users={users} onClose={() => setShowReset(false)} toast={notify} />}
     {toastMessage && <Toast message={toastMessage} onClose={() => setToastMessage('')} />}
   </div>;
