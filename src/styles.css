@@ -294,3 +294,4 @@ label { color: #405b5c; font-size: 13px; }
 .full-notice.schedule_conflict .full-notice-icon { color: #a83e39; background: #ffe9e6; }
 .full-notice.schedule_overlap .full-notice-icon { color: #316c96; background: #e1effa; }
 @media (max-width: 800px) { .schedule-groups { grid-template-columns: 1fr; } }
+.field-hint { display: block; margin-top: 6px; color: #9caaa8; font-size: 9px; font-weight: 400; }

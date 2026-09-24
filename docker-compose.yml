@@ -5,7 +5,11 @@ services:
       - "3030:3030"
     environment:
       PORT: 3030
-      JWT_SECRET: change-this-in-production
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      TODOTIME_PUBLIC_URL: ${TODOTIME_PUBLIC_URL:-https://todotime.me}
+      XTUIS_TOKEN: ${XTUIS_TOKEN:-}
+      XTUIS_TOKENS: ${XTUIS_TOKENS:-}
+      XTUIS_USERNAME: ${XTUIS_USERNAME:-}
     volumes:
       - todotime-data:/app/data
     restart: unless-stopped
