@@ -2,10 +2,10 @@ services:
   todotime:
     build: .
     ports:
-      - "3030:3030"
+      - "127.0.0.1:3030:3030"
     environment:
       PORT: 3030
-      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 中配置 JWT_SECRET}
       TODOTIME_PUBLIC_URL: ${TODOTIME_PUBLIC_URL:-https://todotime.me}
       XTUIS_TOKEN: ${XTUIS_TOKEN:-}
       XTUIS_TOKENS: ${XTUIS_TOKENS:-}

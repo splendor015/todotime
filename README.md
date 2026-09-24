@@ -41,16 +41,29 @@ NODE_ENV=production JWT_SECRET='请替换为随机长字符串' npm start
 
 ## Docker 部署
 
+先在项目目录创建仅服务器持有的 `.env`（该文件已被 Git 忽略）：
+
+```dotenv
+JWT_SECRET=请替换为随机长字符串
+TODOTIME_PUBLIC_URL=https://todotime.me
+XTUIS_TOKEN=第一个虾推啥令牌
+XTUIS_TOKENS=其他虾推啥令牌，多个用英文逗号分隔
+XTUIS_USERNAME=接收通知的TodoTime用户名
+```
+
+随后构建并启动：
+
 ```bash
 docker compose up -d --build
 ```
 
-服务监听 `3030`，数据库通过 Docker volume `todotime-data` 持久化。阿里云上建议再用 Caddy/Nginx 做域名反向代理和 HTTPS，并把 `JWT_SECRET` 改为随机值。
+服务仅绑定宿主机 `127.0.0.1:3030`，数据库通过 Docker volume `todotime-data` 持久化。由宿主机上的 Caddy/Nginx 反向代理到该端口并提供 HTTPS。
 
 ## 云端版本更新
 
 cd /opt/todotime
 git pull --ff-only origin main
+test -f .env
 docker compose build --pull=false
 docker compose up -d
 curl https://todotime.me/api/health
