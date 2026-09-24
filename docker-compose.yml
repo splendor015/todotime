@@ -10,6 +10,8 @@ services:
       XTUIS_TOKEN: ${XTUIS_TOKEN:-}
       XTUIS_TOKENS: ${XTUIS_TOKENS:-}
       XTUIS_USERNAME: ${XTUIS_USERNAME:-}
+      XTUIS_TOKEN_2: ${XTUIS_TOKEN_2:-}
+      XTUIS_USERNAME_2: ${XTUIS_USERNAME_2:-}
     volumes:
       - todotime-data:/app/data
     restart: unless-stopped

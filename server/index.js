@@ -124,12 +124,17 @@ const PORT = Number(process.env.PORT || 3030);
 const JWT_SECRET = process.env.JWT_SECRET || 'todotime-local-secret-change-me';
 const TODOTIME_PUBLIC_URL = process.env.TODOTIME_PUBLIC_URL || 'https://todotime.me';
 const XTUIS_USERNAME = String(process.env.XTUIS_USERNAME || '').trim();
-const xtuisTokens = [process.env.XTUIS_TOKEN, ...String(process.env.XTUIS_TOKENS || '').split(',')]
-  .map(token => String(token || '').trim())
-  .filter((token, index, tokens) => token && tokens.indexOf(token) === index);
-const xtuisSenders = xtuisTokens.map((token, index) => ({
+const XTUIS_USERNAME_2 = String(process.env.XTUIS_USERNAME_2 || '').trim();
+const rawXtuisDestinations = [
+  { token: process.env.XTUIS_TOKEN, username: XTUIS_USERNAME },
+  { token: process.env.XTUIS_TOKEN_2, username: XTUIS_USERNAME_2 },
+  ...String(process.env.XTUIS_TOKENS || '').split(',').map(token => ({ token, username: XTUIS_USERNAME }))
+].map(destination => ({ ...destination, token: String(destination.token || '').trim() }))
+  .filter((destination, index, destinations) => destination.token && destinations.findIndex(candidate => candidate.token === destination.token) === index);
+const xtuisDestinations = rawXtuisDestinations.map((destination, index) => ({
   channel: index === 0 ? 'xtuis' : `xtuis:${index + 1}`,
-  send: createXtuisSender({ token, baseUrl: process.env.XTUIS_BASE_URL || undefined })
+  username: destination.username,
+  send: createXtuisSender({ token: destination.token, baseUrl: process.env.XTUIS_BASE_URL || undefined })
 }));
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
@@ -177,20 +182,21 @@ const issue = (res, user) => {
   const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
   res.cookie('tt_session', token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000 });
 };
-const isXtuisRecipient = (userId) => {
-  if (!xtuisSenders.length) return false;
+const xtuisDestinationsForUser = (userId) => {
+  if (!xtuisDestinations.length) return [];
   const user = db.prepare('SELECT id,username FROM users WHERE id=?').get(userId);
-  if (!user) return false;
-  if (XTUIS_USERNAME) return user.username === XTUIS_USERNAME;
-  return db.prepare('SELECT COUNT(*) AS count FROM users').get().count === 1;
+  if (!user) return [];
+  const singleUser = db.prepare('SELECT COUNT(*) AS count FROM users').get().count === 1;
+  return xtuisDestinations.filter(destination => destination.username ? destination.username === user.username : singleUser);
 };
+const isXtuisRecipient = userId => xtuisDestinationsForUser(userId).length > 0;
 const createNotification = (userId, type, title, body, taskId = null) => {
   const info = db.prepare('INSERT INTO notifications (user_id,type,title,body,task_id) VALUES (?,?,?,?,?)').run(userId, type, title, body || '', taskId);
   if (isXtuisRecipient(userId)) {
     const queue = db.prepare(`INSERT OR IGNORE INTO notification_deliveries
       (notification_id,channel,status,attempts,next_attempt_at,created_at)
       VALUES (?,?,'pending',0,?,?)`);
-    for (const sender of xtuisSenders) queue.run(info.lastInsertRowid, sender.channel, nowIso(), nowIso());
+    for (const destination of xtuisDestinationsForUser(userId)) queue.run(info.lastInsertRowid, destination.channel, nowIso(), nowIso());
     setTimeout(() => processXtuisDeliveries(), 0).unref();
   }
   return Number(info.lastInsertRowid);
@@ -204,25 +210,28 @@ const notifyOther = (userId, type, title, body, taskId = null) => {
 };
 let deliveryWorkerRunning = false;
 const processXtuisDeliveries = async () => {
-  if (!xtuisSenders.length || deliveryWorkerRunning) return;
+  if (!xtuisDestinations.length || deliveryWorkerRunning) return;
   deliveryWorkerRunning = true;
   try {
-    const deliveries = db.prepare(`SELECT d.*, n.user_id, n.title, n.body
+    const deliveries = db.prepare(`SELECT d.*, n.user_id, n.title, n.body, u.username
       FROM notification_deliveries d
       JOIN notifications n ON n.id=d.notification_id
+      JOIN users u ON u.id=n.user_id
       WHERE d.channel LIKE 'xtuis%' AND d.status IN ('pending','retry')
         AND datetime(d.next_attempt_at) <= datetime('now')
       ORDER BY d.id LIMIT 10`).all();
     for (const delivery of deliveries) {
       const claimed = db.prepare("UPDATE notification_deliveries SET status='processing' WHERE id=? AND status IN ('pending','retry')").run(delivery.id);
       if (!claimed.changes) continue;
-      const sender = xtuisSenders.find(candidate => candidate.channel === delivery.channel);
-      if (!sender) {
-        db.prepare("UPDATE notification_deliveries SET status='failed',last_error='通知通道未配置' WHERE id=?").run(delivery.id);
+      const destination = xtuisDestinations.find(candidate => candidate.channel === delivery.channel);
+      const singleUser = db.prepare('SELECT COUNT(*) AS count FROM users').get().count === 1;
+      const correctRecipient = destination && (destination.username ? destination.username === delivery.username : singleUser);
+      if (!correctRecipient) {
+        db.prepare("UPDATE notification_deliveries SET status='failed',last_error='通知通道与接收用户不匹配' WHERE id=?").run(delivery.id);
         continue;
       }
       try {
-        const result = await sender.send({ title: delivery.title, body: xtuisBody(delivery, TODOTIME_PUBLIC_URL) });
+        const result = await destination.send({ title: delivery.title, body: xtuisBody(delivery, TODOTIME_PUBLIC_URL) });
         db.prepare("UPDATE notification_deliveries SET status='sent',attempts=attempts+1,external_id=?,last_error=NULL,sent_at=? WHERE id=?")
           .run(result.messageId, nowIso(), delivery.id);
       } catch (error) {
@@ -375,7 +384,7 @@ const reminderTimeLabel = value => new Intl.DateTimeFormat('zh-CN', {
 }).format(new Date(value));
 let reminderWorkerRunning = false;
 const processDueReminders = () => {
-  if (!xtuisSenders.length || reminderWorkerRunning) return;
+  if (!xtuisDestinations.length || reminderWorkerRunning) return;
   reminderWorkerRunning = true;
   try {
     const now = new Date();
@@ -410,7 +419,7 @@ const processDueReminders = () => {
     reminderWorkerRunning = false;
   }
 };
-if (xtuisSenders.length) {
+if (xtuisDestinations.length) {
   setTimeout(() => { processDueReminders(); processXtuisDeliveries(); }, 500).unref();
   setInterval(processDueReminders, 30000).unref();
   setInterval(processXtuisDeliveries, 10000).unref();
@@ -600,18 +609,22 @@ app.get('/api/notifications', auth, (req, res) => {
 });
 app.post('/api/notifications/read', auth, (req, res) => { db.prepare('UPDATE notifications SET read_at=? WHERE user_id=? AND (id=? OR ?=0)').run(nowIso(), req.user.id, Number(req.body?.id || 0), Number(req.body?.id || 0)); res.json({ ok: true }); });
 app.get('/api/notifications/push-status', auth, (req, res) => {
+  const destinations = xtuisDestinationsForUser(req.user.id);
+  const channels = new Set(destinations.map(destination => destination.channel));
   const recent = db.prepare(`SELECT channel,status,sent_at,last_error FROM notification_deliveries d
     JOIN notifications n ON n.id=d.notification_id
-    WHERE n.user_id=? AND d.channel LIKE 'xtuis%' ORDER BY d.id DESC LIMIT ?`).all(req.user.id, Math.max(1, xtuisSenders.length));
-  res.json({ channel: 'xtuis', configured: isXtuisRecipient(req.user.id), destinations: xtuisSenders.length, recent });
+    WHERE n.user_id=? AND d.channel LIKE 'xtuis%' ORDER BY d.id DESC LIMIT 20`).all(req.user.id)
+    .filter(delivery => channels.has(delivery.channel)).slice(0, destinations.length);
+  res.json({ channel: 'xtuis', configured: destinations.length > 0, destinations: destinations.length, recent });
 });
 app.post('/api/notifications/push-test', auth, async (req, res) => {
-  if (!isXtuisRecipient(req.user.id)) return res.status(400).json({ error: '当前账号尚未配置虾推啥通知' });
+  const destinations = xtuisDestinationsForUser(req.user.id);
+  if (!destinations.length) return res.status(400).json({ error: '当前账号尚未配置虾推啥通知' });
   const notificationId = createNotification(req.user.id, 'push_test', 'TodoTime 微信通知已接通', '这是一条测试消息，之后的重要日程动态会发送到这里。');
   await processXtuisDeliveries();
   const deliveries = db.prepare("SELECT channel,status FROM notification_deliveries WHERE notification_id=? AND channel LIKE 'xtuis%' ORDER BY id").all(notificationId);
   const sent = deliveries.filter(delivery => delivery.status === 'sent').length;
-  res.status(sent === xtuisSenders.length ? 200 : 202).json({ ok: sent === xtuisSenders.length, sent, total: xtuisSenders.length });
+  res.status(sent === destinations.length ? 200 : 202).json({ ok: sent === destinations.length, sent, total: destinations.length });
 });
 
 if (process.env.NODE_ENV === 'production') {
