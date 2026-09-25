@@ -33,6 +33,16 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     const notes = async cookie => (await call('/notifications', cookie)).notifications.filter(n => n.type.startsWith('schedule_'));
     const first = await create(a, 'alpha event');
     assert.equal(first.conflicts.length, 0);
+    const createdNotice = (await call('/notifications', b)).notifications.find(note => note.type === 'task_created' && note.taskId === first.task.id);
+    assert.match(createdNotice.body, /添加人：alpha/);
+    assert.match(createdNotice.body, /日程：alpha event/);
+    assert.match(createdNotice.body, /时间：.*10:00–11:00/);
+    const postedComment = await call(`/tasks/${first.task.id}/comments`, b, 'POST', { body: '我会参加' });
+    assert.match(postedComment.comment.createdAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    const commentNotice = (await call('/notifications', a)).notifications.find(note => note.type === 'comment' && note.taskId === first.task.id);
+    assert.match(commentNotice.body, /评论人：beta/);
+    assert.match(commentNotice.body, /日程：alpha event/);
+    assert.match(commentNotice.body, /评论：我会参加/);
     const background = await create(a, 'trip block', { taskDate: '2026-09-23', startAt: at('2026-09-23', '00:00'), endAt: at('2026-09-25', '23:59'), allDay: true, backgroundSchedule: true, ignoreDayConflicts: true });
     const backgroundTask = (await view(a, '2026-09-23', '2026-09-24')).tasks.find(task => task.id === background.task.id);
     assert.equal(backgroundTask.backgroundSchedule, true);
@@ -48,6 +58,10 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     const shared = await call(`/tasks/${second.task.id}`, b, 'PUT', { assignment: 'both' });
     assert.equal(shared.conflicts[0].type, 'schedule_conflict');
     assert.deepEqual(shared.conflicts[0].responsibleIds, [1]);
+    const updatedNotice = (await call('/notifications', a)).notifications.find(note => note.type === 'task_updated' && note.taskId === second.task.id);
+    assert.match(updatedNotice.body, /修改人：beta/);
+    assert.match(updatedNotice.body, /日程：beta event/);
+    assert.match(updatedNotice.body, /时间：.*10:00–11:00/);
     const count = (await notes(a)).length;
     await view(); await view();
     await call(`/tasks/${second.task.id}`, b, 'PUT', { description: 'unrelated text edit' });
@@ -82,6 +96,9 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     assert.ok(!((await view(a, '2027-01-01')).tasks.some(t => t.id === split.task.id)), 'future series must not duplicate earlier dates');
     assert.equal((await view(a, '2027-01-03')).tasks.filter(t => [series.task.id, split.task.id].includes(t.id)).length, 1);
     assert.equal((await call(`/tasks/${first.task.id}`, a, 'PUT', { endAt: null })).conflicts.length, 0, 'no guessed duration');
+    const timeChangeNotice = (await call('/notifications', b)).notifications.find(note => note.type === 'task_updated' && note.taskId === first.task.id);
+    assert.match(timeChangeNotice.body, /原时间：.*10:00–11:00/);
+    assert.match(timeChangeNotice.body, /新时间：.*10:00 开始/);
     const midnightMonthly = await create(a, 'monthly midnight', { taskDate: '2027-02-01', startAt: at('2027-02-01', '00:00'), endAt: at('2027-02-01', '01:00'), recurrence: { frequency: 'monthly', until: '2027-04-01' } });
     assert.deepEqual((await view(a, '2027-02-01', '2027-04-01')).tasks.filter(t => t.id === midnightMonthly.task.id).map(t => t.occurrenceDate), ['2027-02-01', '2027-03-01', '2027-04-01']);
     const allDay = await create(a, 'all day span', { taskDate: '2027-05-01', startAt: at('2027-05-01', '00:00'), endAt: at('2027-05-04', '00:00'), allDay: true });

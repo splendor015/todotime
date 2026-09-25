@@ -2,11 +2,16 @@ import https from 'node:https';
 
 const DEFAULT_BASE_URL = 'https://wx.xtuis.cn';
 
-const clean = (value, maxLength) => String(value || '')
-  .replace(/[\u0000-\u001f\u007f]/g, ' ')
-  .replace(/\s+/g, ' ')
-  .trim()
-  .slice(0, maxLength);
+const clean = (value, maxLength, preserveLines = false) => {
+  const normalized = String(value || '').replace(/\r\n?/g, '\n');
+  const text = preserveLines
+    ? normalized
+      .replace(/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+      .split('\n').map(line => line.replace(/[\t ]+/g, ' ').trim()).join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+    : normalized.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ');
+  return text.trim().slice(0, maxLength);
+};
 
 const errorMessage = (payload, fallback) => {
   if (!payload || typeof payload !== 'object') return fallback;
@@ -60,7 +65,7 @@ export function createXtuisSender({
 
   return async function sendXtuis({ title, body = '' }) {
     const params = new URLSearchParams({ text: clean(title, 80) || 'TodoTime 通知' });
-    const description = clean(body, 1800);
+    const description = clean(body, 1800, true);
     if (description) params.set('desp', description);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);

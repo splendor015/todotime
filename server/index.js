@@ -9,6 +9,10 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { detectConflicts, responsibleIds } from './conflicts.js';
 import { createXtuisSender, xtuisBody } from './xtuis.js';
+import {
+  commentNotificationBody, conflictNotificationBody, privateTaskBody, reminderNotificationBody,
+  sqliteUtcIso, taskCreatedBody, taskDeletedBody, taskUpdatedBody
+} from './notification-content.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -143,6 +147,7 @@ app.use(cookieParser());
 
 const nowIso = () => new Date().toISOString();
 const toUser = (u) => ({ id: u.id, username: u.username, displayName: u.display_name, role: u.role, color: u.color });
+const actorDisplayName = userId => db.prepare('SELECT display_name FROM users WHERE id=?').get(userId)?.display_name || '成员';
 const publicTask = (t, currentUserId, occurrenceDate = null) => {
   const isPrivate = t.visibility === 'private' && t.owner_id !== currentUserId;
   const tags = (() => { try { return JSON.parse(t.tags || '[]'); } catch { return []; } })();
@@ -201,11 +206,14 @@ const createNotification = (userId, type, title, body, taskId = null) => {
   }
   return Number(info.lastInsertRowid);
 };
-const notifyOther = (userId, type, title, body, taskId = null) => {
+const notifyOther = (userId, type, title, body, taskId = null, privacyTask = null) => {
   const other = db.prepare('SELECT id FROM users WHERE id != ? ORDER BY id LIMIT 1').get(userId);
   if (!other) return;
-  const task = taskId ? db.prepare('SELECT owner_id,visibility FROM tasks WHERE id=?').get(taskId) : null;
-  const safeBody = task?.visibility === 'private' && task.owner_id !== other.id ? '私人安排有更新' : body;
+  const task = taskId ? db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId) : null;
+  const action = type === 'task_created' ? '新建' : type === 'task_deleted' ? '删除' : '修改';
+  const safeBody = task?.visibility === 'private' && task.owner_id !== other.id
+    ? privateTaskBody({ actor: actorDisplayName(userId), action, task: privacyTask || task })
+    : body;
   createNotification(other.id, type, title, safeBody, taskId);
 };
 let deliveryWorkerRunning = false;
@@ -255,6 +263,14 @@ const formatLocalDate = (date) => {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
   const get = (type) => parts.find((part) => part.type === type)?.value;
   return `${get('year')}-${get('month')}-${get('day')}`;
+};
+const taskAtOccurrence = (row, occurrenceDate) => {
+  if (!row?.recurrence || !occurrenceDate) return { ...row };
+  const anchorDay = row.start_at ? formatLocalDate(new Date(row.start_at)) : row.task_date;
+  if (!anchorDay) return { ...row, task_date: occurrenceDate };
+  const delta = Date.parse(`${occurrenceDate}T00:00:00Z`) - Date.parse(`${anchorDay}T00:00:00Z`);
+  const shifted = value => value ? new Date(Date.parse(value) + delta).toISOString() : null;
+  return { ...row, start_at: shifted(row.start_at), end_at: shifted(row.end_at), task_date: occurrenceDate };
 };
 const expandTasks = (rows, from, to, currentUserId) => {
   const fromDate = new Date(`${from}T00:00:00+08:00`);
@@ -356,8 +372,7 @@ const scheduleCheck = (from, to, viewerId) => detectConflicts(
   db.prepare('SELECT id FROM users').all().map(u => u.id), from, to
 );
 const conflictTitle = type => type === 'schedule_conflict' ? '同一负责人被重复安排' : '双方时间重叠';
-const overlapTimeLabel = value => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value));
-const notifySchedule = (conflicts) => {
+const notifySchedule = (conflicts, actorId) => {
   // Group recurring overlaps by task pair; one notification instead of one per day.
   const groups = new Map();
   for (const conflict of conflicts) {
@@ -371,17 +386,31 @@ const notifySchedule = (conflicts) => {
         const fresh = group.filter(c => db.prepare('INSERT OR IGNORE INTO conflict_notifications (user_id,conflict_key) VALUES (?,?)').run(user.id, c.key).changes);
         if (!fresh.length) continue;
         const first = fresh[0];
-        // Generic historical notifications never retain another person's private title.
-        const body = `${overlapTimeLabel(first.startAt)} – ${overlapTimeLabel(first.endAt)}，检测到 ${fresh.length} 处时间重叠。${first.type === 'schedule_conflict' ? '涉及相同负责人，请检查安排。' : '双方分别负责，仅供协调时间，不视为冲突。'}日程已保存。`;
+        const tasks = first.tasks.map(conflictTask => {
+          const row = taskRow(conflictTask.id);
+          if (!row) return null;
+          const isPrivateMasked = row.visibility === 'private' && row.owner_id !== user.id;
+          return {
+            ...row,
+            title: isPrivateMasked ? '私人安排' : row.title,
+            description: isPrivateMasked ? '' : row.description,
+            start_at: conflictTask.startAt,
+            end_at: conflictTask.endAt,
+            task_date: conflictTask.taskDate,
+            all_day: conflictTask.allDay ? 1 : 0,
+            isPrivateMasked
+          };
+        }).filter(Boolean);
+        const body = conflictNotificationBody({
+          actor: actorDisplayName(actorId), type: first.type, count: fresh.length,
+          startAt: first.startAt, endAt: first.endAt, tasks
+        });
         createNotification(user.id, first.type, conflictTitle(first.type), body, first.tasks[0].id);
       }
     }
   })();
 };
 
-const reminderTimeLabel = value => new Intl.DateTimeFormat('zh-CN', {
-  timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
-}).format(new Date(value));
 let reminderWorkerRunning = false;
 const processDueReminders = () => {
   if (!xtuisDestinations.length || reminderWorkerRunning) return;
@@ -409,7 +438,7 @@ const processDueReminders = () => {
           const inserted = db.prepare('INSERT OR IGNORE INTO reminder_notifications (dedupe_key,created_at) VALUES (?,?)').run(dedupeKey, nowIso());
           if (!inserted.changes) return;
           const title = task.isPrivateMasked ? '私人安排即将开始' : '日程即将开始';
-          const body = `${task.title} · ${reminderTimeLabel(task.startAt)}（提前 ${minutes} 分钟提醒）`;
+          const body = reminderNotificationBody({ task, minutes });
           const notificationId = createNotification(user.id, 'task_reminder', title, body, task.id);
           db.prepare('UPDATE reminder_notifications SET notification_id=? WHERE dedupe_key=?').run(notificationId, dedupeKey);
         })();
@@ -447,7 +476,7 @@ app.use('/api/tasks', (req, res, next) => {
         date.setUTCDate(date.getUTCDate() + 89);
         const to = formatLocalDate(date);
         const conflicts = scheduleCheck(from, to, req.user.id).filter(c => c.tasks.some(t => t.id === payload.task.id));
-        notifySchedule(conflicts);
+        notifySchedule(conflicts, req.user.id);
         payload = { ...payload, conflicts, checkedRange: { from, to } };
       }
     }
@@ -508,16 +537,22 @@ app.post('/api/tasks', auth, (req, res) => {
   const recurrence = b.recurrence ? JSON.stringify(b.recurrence) : null;
   const reminderMinutes = !b.allDay && b.startAt && [10, 30, 60].includes(Number(b.reminderMinutes)) ? Number(b.reminderMinutes) : null;
   const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,task_date,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,reminder_minutes,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(req.user.id, b.title.trim(), b.description || '', b.startAt || null, b.endAt || null, b.taskDate || (b.startAt ? b.startAt.slice(0, 10) : null), b.allDay ? 1 : 0, b.priority || 'normal', JSON.stringify(b.tags || []), b.visibility === 'private' ? 'private' : 'shared', b.assignment || 'owner', b.allDay && b.backgroundSchedule ? 1 : 0, b.allDay && b.ignoreDayConflicts ? 1 : 0, reminderMinutes, recurrence);
-  const row = taskRow(info.lastInsertRowid); notifyOther(req.user.id, 'task_created', '新的日程安排', `${row.owner_name} 添加了「${b.title.trim()}」`, row.id);
+  const row = taskRow(info.lastInsertRowid);
+  notifyOther(req.user.id, 'task_created', '新的日程安排', taskCreatedBody({ actor: actorDisplayName(req.user.id), task: row }), row.id, row);
   res.status(201).json({ task: publicTask(row, req.user.id) });
 });
 app.put('/api/tasks/:id', auth, (req, res) => {
   const id = Number(req.params.id); const row = taskRow(id);
   if (!row || row.deleted_at) return res.status(404).json({ error: '任务不存在' });
   const b = { ...req.body }; const scope = b.scope || 'all';
+  const actor = actorDisplayName(req.user.id);
+  let beforeNotification = taskAtOccurrence(row, b.occurrenceDate);
+  let afterNotification = null;
   if (scope === 'this' && b.occurrenceDate && row.recurrence) {
     const prior = db.prepare('SELECT override_json FROM task_exceptions WHERE task_id=? AND occurrence_date=?').get(id, b.occurrenceDate);
-    const overrides = { ...JSON.parse(prior?.override_json || '{}') };
+    const previousOverrides = JSON.parse(prior?.override_json || '{}');
+    beforeNotification = { ...beforeNotification, ...previousOverrides };
+    const overrides = { ...previousOverrides };
     for (const [input, column] of Object.entries({ title: 'title', description: 'description', startAt: 'start_at', endAt: 'end_at', taskDate: 'task_date', priority: 'priority', assignment: 'assignment', visibility: 'visibility', reminderMinutes: 'reminder_minutes' })) {
       if (b[input] !== undefined) overrides[column] = b[input];
     }
@@ -527,6 +562,7 @@ app.put('/api/tasks/:id', auth, (req, res) => {
     if (b.ignoreDayConflicts !== undefined) overrides.ignore_day_conflicts = b.allDay && b.ignoreDayConflicts ? 1 : 0;
     if (b.tags !== undefined) overrides.tags = JSON.stringify(b.tags);
     db.prepare(`INSERT INTO task_exceptions(task_id,occurrence_date,action,override_json) VALUES(?,?,?,?) ON CONFLICT(task_id,occurrence_date) DO UPDATE SET action=excluded.action, override_json=excluded.override_json`).run(id, b.occurrenceDate, 'override', JSON.stringify(overrides));
+    afterNotification = { ...taskAtOccurrence(row, b.occurrenceDate), ...overrides };
   } else if (scope === 'future' && b.occurrenceDate && row.recurrence) {
     const rec = row.recurrence ? JSON.parse(row.recurrence) : null;
     const until = new Date(`${b.occurrenceDate}T00:00:00+08:00`); until.setDate(until.getDate() - 1);
@@ -539,7 +575,9 @@ app.put('/api/tasks/:id', auth, (req, res) => {
     const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,task_date,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,reminder_minutes,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(row.owner_id, b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? shifted(row.start_at) : b.startAt, b.endAt === undefined ? shifted(row.end_at) : b.endAt, b.taskDate ?? b.occurrenceDate ?? row.task_date, allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, reminderMinutes, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null));
     // Move future exceptions with the series to avoid stale, duplicate occurrences.
     db.prepare('UPDATE task_exceptions SET task_id=? WHERE task_id=? AND occurrence_date>=?').run(info.lastInsertRowid, id, b.occurrenceDate);
-    const newRow = taskRow(info.lastInsertRowid); notifyOther(req.user.id, 'task_updated', '日程已更新', `${newRow.owner_name} 更新了「${newRow.title}」`, newRow.id); return res.json({ task: publicTask(newRow, req.user.id) });
+    const newRow = taskRow(info.lastInsertRowid);
+    notifyOther(req.user.id, 'task_updated', '日程已更新', taskUpdatedBody({ actor, before: beforeNotification, after: newRow }), newRow.id, newRow);
+    return res.json({ task: publicTask(newRow, req.user.id) });
   } else {
     // Edits carry an occurrence's date, not the original series anchor.
     if (row.recurrence && b.occurrenceDate && b.recurrence !== null) {
@@ -551,8 +589,11 @@ app.put('/api/tasks/:id', auth, (req, res) => {
     const allDay = b.allDay === undefined ? row.all_day : (b.allDay ? 1 : 0);
     const reminderMinutes = allDay ? null : (b.reminderMinutes === undefined ? row.reminder_minutes : b.reminderMinutes);
     db.prepare(`UPDATE tasks SET title=?,description=?,start_at=?,end_at=?,task_date=?,all_day=?,priority=?,tags=?,visibility=?,assignment=?,background_schedule=?,ignore_day_conflicts=?,reminder_minutes=?,recurrence=?,status=?,updated_at=? WHERE id=?`).run(b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? row.start_at : (b.startAt || null), b.endAt === undefined ? row.end_at : (b.endAt || null), b.taskDate ?? (b.startAt ? formatLocalDate(new Date(b.startAt)) : row.task_date), allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, reminderMinutes, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null), b.status ?? row.status, nowIso(), id);
+    afterNotification = taskAtOccurrence(taskRow(id), req.body?.occurrenceDate);
   }
-  const updated = taskRow(id); notifyOther(req.user.id, 'task_updated', '日程已更新', `${updated.owner_name} 更新了「${updated.title}」`, id); res.json({ task: publicTask(updated, req.user.id) });
+  const updated = taskRow(id);
+  notifyOther(req.user.id, 'task_updated', '日程已更新', taskUpdatedBody({ actor, before: beforeNotification, after: afterNotification || updated }), id, afterNotification || updated);
+  res.json({ task: publicTask(updated, req.user.id) });
 });
 app.post('/api/tasks/:id/complete', auth, (req, res) => {
   const id = Number(req.params.id); const row = taskRow(id); if (!row) return res.status(404).json({ error: '任务不存在' });
@@ -567,7 +608,9 @@ app.post('/api/tasks/:id/complete', auth, (req, res) => {
 });
 app.delete('/api/tasks/:id', auth, (req, res) => {
   const id = Number(req.params.id); const row = taskRow(id); if (!row) return res.status(404).json({ error: '任务不存在' });
-  db.prepare('UPDATE tasks SET deleted_at=?,updated_at=? WHERE id=?').run(nowIso(), nowIso(), id); notifyOther(req.user.id, 'task_deleted', '任务移入回收站', `「${row.title}」已被移入回收站`, id); res.json({ ok: true });
+  db.prepare('UPDATE tasks SET deleted_at=?,updated_at=? WHERE id=?').run(nowIso(), nowIso(), id);
+  notifyOther(req.user.id, 'task_deleted', '任务移入回收站', taskDeletedBody({ actor: actorDisplayName(req.user.id), task: row }), id, row);
+  res.json({ ok: true });
 });
 app.post('/api/tasks/:id/restore', auth, (req, res) => { const id = Number(req.params.id); if (!taskRow(id)) return res.status(404).json({ error: '任务不存在' }); db.prepare('UPDATE tasks SET deleted_at=NULL,updated_at=? WHERE id=?').run(nowIso(), id); res.json({ ok: true, task: publicTask(taskRow(id), req.user.id) }); });
 app.delete('/api/tasks/:id/permanent', auth, (req, res) => {
@@ -587,7 +630,7 @@ app.get('/api/tasks/:id/comments', auth, (req, res) => {
   if (!task || task.deleted_at) return res.status(404).json({ error: '任务不存在' });
   if (task.visibility === 'private' && task.owner_id !== req.user.id) return res.status(403).json({ error: '无权查看私人安排的评论' });
   const comments = db.prepare(`SELECT c.*, u.display_name AS user_name, u.color AS user_color FROM comments c JOIN users u ON u.id=c.user_id WHERE c.task_id=? ORDER BY c.created_at`).all(Number(req.params.id));
-  res.json({ comments: comments.map((c) => ({ id: c.id, taskId: c.task_id, userId: c.user_id, userName: c.user_name, userColor: c.user_color, body: c.body, createdAt: c.created_at })) });
+  res.json({ comments: comments.map((c) => ({ id: c.id, taskId: c.task_id, userId: c.user_id, userName: c.user_name, userColor: c.user_color, body: c.body, createdAt: sqliteUtcIso(c.created_at) })) });
 });
 app.post('/api/tasks/:id/comments', auth, (req, res) => {
   if (!req.body?.body?.trim()) return res.status(400).json({ error: '评论不能为空' });
@@ -596,16 +639,18 @@ app.post('/api/tasks/:id/comments', auth, (req, res) => {
   if (task.visibility === 'private' && task.owner_id !== req.user.id) return res.status(403).json({ error: '无权评论私人安排' });
   const commentBody = req.body.body.trim().slice(0, 2000);
   const info = db.prepare('INSERT INTO comments(task_id,user_id,body) VALUES(?,?,?)').run(id, req.user.id, commentBody);
-  const other = db.prepare('SELECT id FROM users WHERE id != ? LIMIT 1').get(req.user.id);
-  if (other && task.visibility !== 'private') createNotification(other.id, 'comment', '任务有新评论', commentBody.slice(0, 120), id);
   const c = db.prepare(`SELECT c.*,u.display_name AS user_name,u.color AS user_color FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?`).get(info.lastInsertRowid);
-  res.status(201).json({ comment: { id: c.id, taskId: c.task_id, userId: c.user_id, userName: c.user_name, userColor: c.user_color, body: c.body, createdAt: c.created_at } });
+  const other = db.prepare('SELECT id FROM users WHERE id != ? LIMIT 1').get(req.user.id);
+  if (other && task.visibility !== 'private') {
+    createNotification(other.id, 'comment', '任务有新评论', commentNotificationBody({ actor: c.user_name, task, comment: commentBody, createdAt: c.created_at }), id);
+  }
+  res.status(201).json({ comment: { id: c.id, taskId: c.task_id, userId: c.user_id, userName: c.user_name, userColor: c.user_color, body: c.body, createdAt: sqliteUtcIso(c.created_at) } });
 });
 app.delete('/api/comments/:id', auth, (req, res) => { db.prepare('DELETE FROM comments WHERE id=? AND user_id=?').run(Number(req.params.id), req.user.id); res.json({ ok: true }); });
 
 app.get('/api/notifications', auth, (req, res) => {
   const list = db.prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC').all(req.user.id);
-  res.json({ notifications: list.map((n) => ({ id: n.id, type: n.type, title: n.title, body: n.body, taskId: n.task_id, read: Boolean(n.read_at), createdAt: n.created_at })) });
+  res.json({ notifications: list.map((n) => ({ id: n.id, type: n.type, title: n.title, body: n.body, taskId: n.task_id, read: Boolean(n.read_at), createdAt: sqliteUtcIso(n.created_at) })) });
 });
 app.post('/api/notifications/read', auth, (req, res) => { db.prepare('UPDATE notifications SET read_at=? WHERE user_id=? AND (id=? OR ?=0)').run(nowIso(), req.user.id, Number(req.body?.id || 0), Number(req.body?.id || 0)); res.json({ ok: true }); });
 app.get('/api/notifications/push-status', auth, (req, res) => {

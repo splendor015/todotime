@@ -23,7 +23,7 @@ test('xtuis sender encodes content and returns message id without exposing token
   const url = new URL(requested.url);
   assert.equal(url.pathname, '/secret%2Ftoken.send');
   assert.equal(url.searchParams.get('text'), '日程 & 提醒');
-  assert.equal(url.searchParams.get('desp'), '今晚 19:00 健身');
+  assert.equal(url.searchParams.get('desp'), '今晚 19:00\n健身');
   assert.equal(requested.options.method, 'GET');
   assert.equal(result.messageId, 'wx_123');
 });
