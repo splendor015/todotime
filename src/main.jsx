@@ -166,7 +166,7 @@ function TaskModal({ task, users, currentUserId, onClose, onSaved, onDeleted, to
   const addComment = async (e) => { e.preventDefault(); if (!comment.trim()) return; try { const d = await api(`/tasks/${task.id}/comments`, { method: 'POST', body: JSON.stringify({ body: comment }) }); setComments([...comments, d.comment]); setComment(''); } catch (err) { toast(err.message); } };
   return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><aside className="task-drawer">
     <header className="drawer-head"><div><span className="drawer-kicker">{isEdit ? '编辑日程' : '新建日程'}</span><h2>{isEdit ? (task.isPrivateMasked ? '私人安排' : task.title) : '新建日程'}</h2></div><button className="icon-button" onClick={onClose}><X size={19} /></button></header>
-    <div className="drawer-tabs"><button className={tab === 'details' ? 'active' : ''} onClick={() => setTab('details')}>日程详情</button>{isEdit && <button className={tab === 'comments' ? 'active' : ''} onClick={() => setTab('comments')}>评论 <span>{comments.length || ''}</span></button>}</div>
+    <div className="drawer-tabs"><button className={tab === 'details' ? 'active' : ''} onClick={() => setTab('details')}>日程详情</button>{isEdit && <button className={tab === 'comments' ? 'active' : ''} onClick={() => setTab('comments')}>评论 <span>{comments.length}</span></button>}</div>
     {tab === 'details' ? <form className="drawer-body" onSubmit={save}>
       <label className="label-block">标题<input autoFocus={!isEdit} placeholder="输入标题" value={form.title} onChange={e => set('title', e.target.value)} /></label>
       <label className="label-block">备注<textarea rows="3" placeholder="添加一些上下文…" value={form.description} onChange={e => set('description', e.target.value)} /></label>
