@@ -37,6 +37,9 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     assert.match(createdNotice.body, /添加人：alpha/);
     assert.match(createdNotice.body, /日程：alpha event/);
     assert.match(createdNotice.body, /时间：.*10:00–11:00/);
+    assert.equal((await call(`/tasks/${createdNotice.taskId}`, b)).task.title, 'alpha event', 'notification target opens without a calendar date range');
+    await assert.rejects(call(`/tasks/${first.task.id}`), /401/);
+    await assert.rejects(call('/tasks/999999', b), /404/);
     const postedComment = await call(`/tasks/${first.task.id}/comments`, b, 'POST', { body: '我会参加' });
     assert.match(postedComment.comment.createdAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     const commentNotice = (await call('/notifications', a)).notifications.find(note => note.type === 'comment' && note.taskId === first.task.id);
@@ -70,6 +73,7 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     assert.ok(!(await view()).conflicts.some(c => c.tasks.some(task => task.id === second.task.id)));
     await call(`/tasks/${second.task.id}/complete`, b, 'POST', {});
     await call(`/tasks/${second.task.id}`, b, 'DELETE');
+    await assert.rejects(call(`/tasks/${second.task.id}`, a), /404/, 'deleted notification targets cannot be edited');
     assert.ok(!(await view()).conflicts.some(c => c.tasks.some(task => task.id === second.task.id)));
     const restored = await call(`/tasks/${second.task.id}/restore`, b, 'POST');
     assert.ok(restored.conflicts.some(c => c.tasks.some(task => task.id === second.task.id)));
@@ -79,6 +83,11 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     assert.ok(!JSON.stringify(otherView).includes('secret-body-unique'));
     assert.ok(otherView.conflicts.some(c => c.tasks.some(t => t.id === privateTask.task.id && t.title === '私人安排')));
     assert.ok(!JSON.stringify(await call('/notifications', b)).includes('secret-title-unique'));
+    const privateDetail = (await call(`/tasks/${privateTask.task.id}`, b)).task;
+    assert.equal(privateDetail.isPrivateMasked, true);
+    assert.equal(privateDetail.title, '私人安排');
+    assert.equal(privateDetail.description, '');
+    assert.equal((await call(`/tasks/${privateTask.task.id}`, a)).task.title, 'secret-title-unique');
     const recurring = await create(a, 'fortnightly', { taskDate: '2026-10-01', startAt: at('2026-10-01', '10:00'), endAt: at('2026-10-01', '11:00'), recurrence: { frequency: 'biweekly', until: '2026-11-01' } });
     const oct = await view(a, '2026-10-01', '2026-10-31');
     assert.deepEqual(oct.tasks.filter(t => t.id === recurring.task.id).map(t => t.occurrenceDate), ['2026-10-01', '2026-10-15', '2026-10-29']);

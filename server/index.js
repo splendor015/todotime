@@ -531,6 +531,11 @@ app.get('/api/tasks', auth, (req, res) => {
   const tasks = includeDeleted ? rows.map((r) => publicTask(r, req.user.id)) : expandTasks(rows, from, to, req.user.id);
   res.json({ tasks, conflicts: includeDeleted ? [] : detectConflicts(tasks, db.prepare('SELECT id FROM users').all().map(u => u.id), from, to) });
 });
+app.get('/api/tasks/:id', auth, (req, res) => {
+  const row = taskRow(Number(req.params.id));
+  if (!row || row.deleted_at) return res.status(404).json({ error: '任务不存在' });
+  res.json({ task: publicTask(row, req.user.id) });
+});
 app.post('/api/tasks', auth, (req, res) => {
   const b = req.body || {};
   if (!b.title?.trim()) return res.status(400).json({ error: '请输入任务标题' });
