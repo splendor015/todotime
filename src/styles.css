@@ -296,3 +296,11 @@ label { color: #405b5c; font-size: 13px; }
 .full-notice.schedule_overlap .full-notice-icon { color: #316c96; background: #e1effa; }
 @media (max-width: 800px) { .schedule-groups { grid-template-columns: 1fr; } }
 .field-hint { display: block; margin-top: 6px; color: #9caaa8; font-size: 9px; font-weight: 400; }
+
+.full-notice-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.full-notice-links .full-notice-task { max-width: 100%; min-height: 32px; text-align: left; line-height: 1.5; }
+.full-notice-task span { overflow-wrap: anywhere; min-width: 0; }
+.full-notice-task svg { flex-shrink: 0; }
+.full-notice-task:disabled { opacity: .65; cursor: default; }
+.full-notice-task:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.full-notice-main .full-notice-hint { font-size: 11px; color: #718683; }

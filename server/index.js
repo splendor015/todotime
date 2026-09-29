@@ -107,6 +107,7 @@ try { db.exec('ALTER TABLE tasks ADD COLUMN task_date TEXT'); } catch { /* alrea
 try { db.exec('ALTER TABLE tasks ADD COLUMN background_schedule INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
 try { db.exec('ALTER TABLE tasks ADD COLUMN ignore_day_conflicts INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
 try { db.exec('ALTER TABLE tasks ADD COLUMN reminder_minutes INTEGER'); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE notifications ADD COLUMN task_links TEXT NOT NULL DEFAULT '[]'"); } catch { /* already exists */ }
 
 const purgeExpiredTrash = () => {
   const expired = db.prepare("SELECT id FROM tasks WHERE deleted_at IS NOT NULL AND datetime(deleted_at) < datetime('now', '-30 day')").all();
@@ -195,8 +196,8 @@ const xtuisDestinationsForUser = (userId) => {
   return xtuisDestinations.filter(destination => destination.username ? destination.username === user.username : singleUser);
 };
 const isXtuisRecipient = userId => xtuisDestinationsForUser(userId).length > 0;
-const createNotification = (userId, type, title, body, taskId = null) => {
-  const info = db.prepare('INSERT INTO notifications (user_id,type,title,body,task_id) VALUES (?,?,?,?,?)').run(userId, type, title, body || '', taskId);
+const createNotification = (userId, type, title, body, taskId = null, taskLinks = []) => {
+  const info = db.prepare('INSERT INTO notifications (user_id,type,title,body,task_id,task_links) VALUES (?,?,?,?,?,?)').run(userId, type, title, body || '', taskId, JSON.stringify(taskLinks));
   if (isXtuisRecipient(userId)) {
     const queue = db.prepare(`INSERT OR IGNORE INTO notification_deliveries
       (notification_id,channel,status,attempts,next_attempt_at,created_at)
@@ -405,7 +406,8 @@ const notifySchedule = (conflicts, actorId) => {
           actor: actorDisplayName(actorId), type: first.type, count: fresh.length,
           startAt: first.startAt, endAt: first.endAt, tasks
         });
-        createNotification(user.id, first.type, conflictTitle(first.type), body, first.tasks[0].id);
+        createNotification(user.id, first.type, conflictTitle(first.type), body, first.tasks[0].id,
+          first.tasks.map(task => ({ taskId: task.id, occurrenceDate: task.recurrence ? task.occurrenceDate : null })));
       }
     }
   })();
@@ -534,6 +536,15 @@ app.get('/api/tasks', auth, (req, res) => {
 app.get('/api/tasks/:id', auth, (req, res) => {
   const row = taskRow(Number(req.params.id));
   if (!row || row.deleted_at) return res.status(404).json({ error: '任务不存在' });
+  const occurrenceDate = req.query.occurrenceDate;
+  if (occurrenceDate !== undefined) {
+    if (typeof occurrenceDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(occurrenceDate) || !Number.isFinite(Date.parse(occurrenceDate))) return res.status(400).json({ error: '无效的日程日期' });
+    if (row.recurrence) {
+      const task = expandTasks([row], occurrenceDate, occurrenceDate, req.user.id).find(task => task.occurrenceDate === occurrenceDate);
+      if (!task) return res.status(404).json({ error: '该次日程已取消或不存在' });
+      return res.json({ task });
+    }
+  }
   res.json({ task: publicTask(row, req.user.id) });
 });
 app.post('/api/tasks', auth, (req, res) => {
@@ -655,7 +666,18 @@ app.delete('/api/comments/:id', auth, (req, res) => { db.prepare('DELETE FROM co
 
 app.get('/api/notifications', auth, (req, res) => {
   const list = db.prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC').all(req.user.id);
-  res.json({ notifications: list.map((n) => ({ id: n.id, type: n.type, title: n.title, body: n.body, taskId: n.task_id, read: Boolean(n.read_at), createdAt: sqliteUtcIso(n.created_at) })) });
+  res.json({ notifications: list.map(n => {
+    const storedLinks = JSON.parse(n.task_links || '[]');
+    const links = storedLinks.length ? storedLinks : (n.task_id ? [{ taskId: n.task_id, occurrenceDate: null }] : []);
+    const taskLinks = links.map(link => {
+      const row = taskRow(link.taskId);
+      const task = row ? publicTask(row, req.user.id) : null;
+      return { ...link, title: task?.title || '日程不存在', unavailable: !row || Boolean(row.deleted_at), isPrivateMasked: Boolean(task?.isPrivateMasked) };
+    });
+    return { id: n.id, type: n.type, title: n.title, body: n.body, taskId: n.task_id, taskLinks,
+      incompleteTaskLinks: n.type.startsWith('schedule_') && !storedLinks.length,
+      read: Boolean(n.read_at), createdAt: sqliteUtcIso(n.created_at) };
+  }) });
 });
 app.post('/api/notifications/read', auth, (req, res) => { db.prepare('UPDATE notifications SET read_at=? WHERE user_id=? AND (id=? OR ?=0)').run(nowIso(), req.user.id, Number(req.body?.id || 0), Number(req.body?.id || 0)); res.json({ ok: true }); });
 app.get('/api/notifications/push-status', auth, (req, res) => {

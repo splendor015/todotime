@@ -273,7 +273,23 @@ function NotificationsPage({ notifications, onRead, onReadAll, onBack, onOpenTas
   return <section className="content-area notifications-page">
     <div className="page-heading"><div><div className="eyebrow">SHARED SPACE · NOTIFICATIONS</div><h1>通知</h1><p>这里集中显示共享空间里的全部动态。</p></div><div className="heading-actions"><button className="today-button" onClick={onReadAll} disabled={!unreadCount}>全部已读</button><button className="primary-button add-button" onClick={onBack}><CalendarDays size={16} />返回日历</button></div></div>
     <div className="notification-summary"><div className="notification-summary-icon"><Bell size={20} /></div><div><strong>{notifications.length}</strong><span>条通知</span></div><div className="notification-summary-divider" /><div><strong>{unreadCount}</strong><span>条未读</span></div></div>
-    <div className="notification-page-list">{notifications.length ? notifications.map(notification => <article key={notification.id} className={`full-notice ${notification.read ? '' : 'unread'} ${notification.type} ${notification.taskId ? 'has-task-link' : ''}`} onClick={() => notification.taskId ? onOpenTask(notification) : (!notification.read && onRead(notification.id))}><div className="full-notice-icon"><Bell size={17} /></div><div className="full-notice-main"><div className="full-notice-title"><strong>{notification.title}</strong>{!notification.read && <span>未读</span>}</div>{notification.body && <p>{notification.body}</p>}<small>{notificationDateLabel(notification.createdAt)}</small></div>{notification.taskId && <button type="button" className="full-notice-task" onClick={event => { event.stopPropagation(); onOpenTask(notification); }}>查看日程<ChevronRight size={13} /></button>}</article>) : <div className="notifications-empty"><Bell size={28} /><h3>暂时没有通知</h3><p>当共享空间发生日程或评论变化时，会显示在这里。</p></div>}</div>
+    <div className="notification-page-list">{notifications.length ? notifications.map(notification => {
+      const links = notification.taskLinks || (notification.taskId ? [{ taskId: notification.taskId }] : []);
+      const isSchedule = notification.type.startsWith('schedule_');
+      const activate = () => links.length === 1 && !isSchedule ? onOpenTask(notification, links[0]) : (!notification.read && onRead(notification.id));
+      return <article key={notification.id} className={`full-notice ${notification.read ? '' : 'unread'} ${notification.type}`} onClick={activate}>
+        <div className="full-notice-icon"><Bell size={17} /></div>
+        <div className="full-notice-main">
+          <div className="full-notice-title"><strong>{notification.title}</strong>{!notification.read && <span>未读</span>}</div>
+          {notification.body && <p>{notification.body}</p>}
+          <small>{notificationDateLabel(notification.createdAt)}</small>
+          {links.length > 0 && <div className="full-notice-links">{links.map((link, index) => <button type="button" key={`${link.taskId}:${link.occurrenceDate || ''}`} className="full-notice-task" disabled={link.unavailable || link.isPrivateMasked} onClick={event => { event.stopPropagation(); onOpenTask(notification, link); }}>
+            <span>{isSchedule ? `查看日程${index + 1}` : '查看日程'}{link.title ? `：${link.title}` : ''}{link.unavailable ? '（已删除）' : link.isPrivateMasked ? '（仅创建者可查看）' : ''}</span><ChevronRight size={13} />
+          </button>)}</div>}
+          {notification.incompleteTaskLinks && <p className="full-notice-hint">此历史通知仅支持打开日程1；新通知将提供双方入口。</p>}
+        </div>
+      </article>;
+    }) : <div className="notifications-empty"><Bell size={28} /><h3>暂时没有通知</h3><p>当共享空间发生日程或评论变化时，会显示在这里。</p></div>}</div>
   </section>;
 }
 
@@ -310,11 +326,12 @@ function App() {
   const markAllNotificationsRead = async () => {
     try { await api('/notifications/read', { method: 'POST', body: JSON.stringify({}) }); setNotifications(old => old.map(notification => ({ ...notification, read: true }))); } catch (error) { notify(error.message); }
   };
-  const openNotificationTask = async (notification) => {
-    if (!notification.taskId) return;
+  const openNotificationTask = async (notification, link) => {
+    if (!link?.taskId) return;
     if (!notification.read) await markNotificationRead(notification.id);
     try {
-      const data = await api(`/tasks/${notification.taskId}`);
+      const query = link.occurrenceDate ? `?occurrenceDate=${encodeURIComponent(link.occurrenceDate)}` : '';
+      const data = await api(`/tasks/${link.taskId}${query}`);
       if (data.task.isPrivateMasked) return notify('这是对方的私人安排，仅显示占用时间');
       setModal(data.task);
     } catch (error) {

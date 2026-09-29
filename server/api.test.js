@@ -57,9 +57,16 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     const noticesBeforeSecond = (await notes(a)).length;
     const second = await create(b, 'beta event');
     assert.equal(second.conflicts[0].type, 'schedule_overlap');
+    const pairNotice = (await notes(a)).find(note => note.taskLinks.some(link => link.taskId === first.task.id) && note.taskLinks.some(link => link.taskId === second.task.id));
+    assert.deepEqual(pairNotice.taskLinks.map(link => link.taskId), [first.task.id, second.task.id]);
+    assert.equal(pairNotice.incompleteTaskLinks, false);
+    for (const link of pairNotice.taskLinks) {
+      assert.equal((await call(`/tasks/${link.taskId}`, a)).task.title, link.title, 'each overlap link opens its own task');
+    }
     assert.equal((await notes(a)).length, noticesBeforeSecond + 2);
     const shared = await call(`/tasks/${second.task.id}`, b, 'PUT', { assignment: 'both' });
     assert.equal(shared.conflicts[0].type, 'schedule_conflict');
+    assert.ok((await notes(a)).some(note => note.type === 'schedule_conflict' && note.taskLinks.length === 2 && note.taskLinks.some(link => link.taskId === second.task.id)));
     assert.deepEqual(shared.conflicts[0].responsibleIds, [1]);
     const updatedNotice = (await call('/notifications', a)).notifications.find(note => note.type === 'task_updated' && note.taskId === second.task.id);
     assert.match(updatedNotice.body, /修改人：beta/);
@@ -74,6 +81,8 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     await call(`/tasks/${second.task.id}/complete`, b, 'POST', {});
     await call(`/tasks/${second.task.id}`, b, 'DELETE');
     await assert.rejects(call(`/tasks/${second.task.id}`, a), /404/, 'deleted notification targets cannot be edited');
+    const deletedLink = (await notes(a)).find(note => note.id === pairNotice.id).taskLinks.find(link => link.taskId === second.task.id);
+    assert.equal(deletedLink.unavailable, true);
     assert.ok(!(await view()).conflicts.some(c => c.tasks.some(task => task.id === second.task.id)));
     const restored = await call(`/tasks/${second.task.id}/restore`, b, 'POST');
     assert.ok(restored.conflicts.some(c => c.tasks.some(task => task.id === second.task.id)));
@@ -87,17 +96,30 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     assert.equal(privateDetail.isPrivateMasked, true);
     assert.equal(privateDetail.title, '私人安排');
     assert.equal(privateDetail.description, '');
+    const maskedLinks = (await notes(b)).flatMap(note => note.taskLinks).filter(link => link.taskId === privateTask.task.id);
+    assert.ok(maskedLinks.length > 0);
+    assert.ok(maskedLinks.every(link => link.title === '私人安排' && link.isPrivateMasked));
     assert.equal((await call(`/tasks/${privateTask.task.id}`, a)).task.title, 'secret-title-unique');
     const recurring = await create(a, 'fortnightly', { taskDate: '2026-10-01', startAt: at('2026-10-01', '10:00'), endAt: at('2026-10-01', '11:00'), recurrence: { frequency: 'biweekly', until: '2026-11-01' } });
     const oct = await view(a, '2026-10-01', '2026-10-31');
     assert.deepEqual(oct.tasks.filter(t => t.id === recurring.task.id).map(t => t.occurrenceDate), ['2026-10-01', '2026-10-15', '2026-10-29']);
     const target = await create(a, 'recurrence overlap', { taskDate: '2026-10-15', startAt: at('2026-10-15', '10:30'), endAt: at('2026-10-15', '11:30') });
     assert.equal(target.conflicts.length, 1);
+    const recurrenceNotice = (await notes(a)).find(note => note.taskLinks.some(link => link.taskId === target.task.id));
+    const recurrenceLink = recurrenceNotice.taskLinks.find(link => link.taskId === recurring.task.id);
+    assert.equal(recurrenceLink.occurrenceDate, '2026-10-15');
+    const occurrenceUrl = `/tasks/${recurrenceLink.taskId}?occurrenceDate=${recurrenceLink.occurrenceDate}`;
+    assert.equal((await call(occurrenceUrl, a)).task.occurrenceDate, '2026-10-15');
+    await assert.rejects(call(`/tasks/${recurring.task.id}?occurrenceDate=invalid`, a), /400/);
+    await assert.rejects(call(`/tasks/${recurring.task.id}?occurrenceDate=2026-10-16`, a), /404/);
     await call(`/tasks/${recurring.task.id}`, a, 'PUT', { scope: 'this', occurrenceDate: '2026-10-15', startAt: at('2026-10-15', '12:00'), endAt: at('2026-10-15', '13:00') });
     assert.equal((await view(a, '2026-10-15')).conflicts.length, 0);
+    assert.equal(Date.parse((await call(occurrenceUrl, a)).task.startAt), Date.parse(at('2026-10-15', '12:00')), 'notification links load the latest occurrence overrides');
+    assert.equal((await notes(a)).find(note => note.id === recurrenceNotice.id).taskLinks.length, 2, 'both links remain after resolving a conflict');
     await call(`/tasks/${recurring.task.id}`, a, 'PUT', { scope: 'this', occurrenceDate: '2026-10-29', startAt: at('2026-12-10', '10:00'), endAt: at('2026-12-10', '11:00') });
     const movedTarget = await create(a, 'moved exception target', { taskDate: '2026-12-10', startAt: at('2026-12-10', '10:30'), endAt: at('2026-12-10', '11:30') });
     assert.equal(movedTarget.conflicts.length, 1, 'moved-in exception detected beyond original series range');
+    assert.equal(Date.parse((await call(`/tasks/${recurring.task.id}?occurrenceDate=2026-10-29`, a)).task.startAt), Date.parse(at('2026-12-10', '10:00')), 'moved occurrences open by their original identity');
     const series = await create(a, 'daily series', { taskDate: '2027-01-01', startAt: at('2027-01-01', '10:00'), endAt: at('2027-01-01', '11:00'), recurrence: { frequency: 'daily', until: '2027-01-05' } });
     await call(`/tasks/${series.task.id}`, a, 'PUT', { scope: 'all', occurrenceDate: '2027-01-03', taskDate: '2027-01-03', startAt: at('2027-01-03', '12:00'), endAt: at('2027-01-03', '13:00') });
     assert.equal((await view(a, '2027-01-01')).tasks.filter(t => t.id === series.task.id).length, 1, 'all-scope preserves first occurrence');
