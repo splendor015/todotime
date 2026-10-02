@@ -311,3 +311,12 @@ label { color: #405b5c; font-size: 13px; }
 .full-notice-task:disabled { opacity: .65; cursor: default; }
 .full-notice-task:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .full-notice-main .full-notice-hint { font-size: 11px; color: #718683; }
+/* Point-in-time deadline markers. */
+.deadline-task { position: absolute; left: 5px; right: 5px; min-height: 30px; border-left: 3px solid var(--task-color); background: color-mix(in srgb, var(--task-color) 13%, white); border-radius: 6px; padding: 5px 6px; overflow: hidden; cursor: pointer; box-shadow: 0 2px 4px rgba(44,67,65,.05); z-index: 2; display: flex; align-items: center; gap: 4px; font-size: 10px; }
+.deadline-task strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #496463; flex: 1; }
+.deadline-task span { color: #8d9e9c; font-size: 9px; white-space: nowrap; }
+.deadline-task.done { opacity: .55; }
+.deadline-task.done strong { text-decoration: line-through; }
+.deadline-task.private { border-left-color: #9a9fa5; background: #f3f4f4; }
+.deadline-task.overdue { border-left-color: #c35f4e; background: #fff1ed; }
+.month-task.overdue { border-left-color: #c35f4e; background: #fff1ed; }

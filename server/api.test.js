@@ -38,6 +38,14 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     assert.match(createdNotice.body, /日程：alpha event/);
     assert.match(createdNotice.body, /时间：.*10:00–11:00/);
     assert.equal((await call(`/tasks/${createdNotice.taskId}`, b)).task.title, 'alpha event', 'notification target opens without a calendar date range');
+    const deadline = await create(a, 'submit homework', { taskDate: '2026-09-23', startAt: null, endAt: null, dueAt: at('2026-09-23', '18:00'), reminderMinutes: 30 });
+    assert.equal(deadline.task.isDeadline, true);
+    assert.equal(deadline.task.startAt, null);
+    assert.equal(deadline.task.endAt, null);
+    assert.equal(Date.parse(deadline.task.dueAt), Date.parse(at('2026-09-23', '18:00')));
+    const deadlineView = (await view(a, '2026-09-23')).tasks.find(task => task.id === deadline.task.id);
+    assert.equal(deadlineView.dueAt, deadline.task.dueAt);
+    assert.equal((await call(`/tasks/${deadline.task.id}`, b)).task.dueAt, deadline.task.dueAt);
     await assert.rejects(call(`/tasks/${first.task.id}`), /401/);
     await assert.rejects(call('/tasks/999999', b), /404/);
     const postedComment = await call(`/tasks/${first.task.id}/comments`, b, 'POST', { body: '我会参加' });
@@ -103,6 +111,10 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     const recurring = await create(a, 'fortnightly', { taskDate: '2026-10-01', startAt: at('2026-10-01', '10:00'), endAt: at('2026-10-01', '11:00'), recurrence: { frequency: 'biweekly', until: '2026-11-01' } });
     const oct = await view(a, '2026-10-01', '2026-10-31');
     assert.deepEqual(oct.tasks.filter(t => t.id === recurring.task.id).map(t => t.occurrenceDate), ['2026-10-01', '2026-10-15', '2026-10-29']);
+    const deadlineSeries = await create(a, 'weekly deadline', { taskDate: '2026-10-02', startAt: null, endAt: null, dueAt: at('2026-10-02', '18:00'), recurrence: { frequency: 'weekly', until: '2026-10-23' } });
+    const deadlineOccurrences = (await view(a, '2026-10-01', '2026-10-31')).tasks.filter(t => t.id === deadlineSeries.task.id);
+    assert.deepEqual(deadlineOccurrences.map(t => t.occurrenceDate), ['2026-10-02', '2026-10-09', '2026-10-16', '2026-10-23']);
+    assert.ok(deadlineOccurrences.every(t => !t.startAt && !t.endAt && t.dueAt));
     const target = await create(a, 'recurrence overlap', { taskDate: '2026-10-15', startAt: at('2026-10-15', '10:30'), endAt: at('2026-10-15', '11:30') });
     assert.equal(target.conflicts.length, 1);
     const recurrenceNotice = (await notes(a)).find(note => note.taskLinks.some(link => link.taskId === target.task.id));

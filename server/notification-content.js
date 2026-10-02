@@ -45,6 +45,7 @@ export const sqliteUtcIso = value => {
 export const taskTimeLabel = task => {
   const start = taskValue(task, 'start_at', 'startAt');
   const end = taskValue(task, 'end_at', 'endAt');
+  const due = taskValue(task, 'due_at', 'dueAt');
   const allDay = Boolean(taskValue(task, 'all_day', 'allDay'));
   if (allDay) {
     const startDate = start || taskDateValue(task);
@@ -55,6 +56,7 @@ export const taskTimeLabel = task => {
     if (firstLabel && lastLabel && firstLabel !== lastLabel) return `${firstLabel} 至 ${lastLabel}（全天）`;
     return firstLabel ? `${firstLabel}（全天）` : '全天安排';
   }
+  if (due) return `${dateTimeText(due)} 截止`;
   if (start && end) {
     const startDay = dateText(start); const endDay = dateText(end);
     if (startDay === endDay) return `${startDay} ${timeText(start)}–${timeText(end)}`;
@@ -117,7 +119,7 @@ export const reminderNotificationBody = ({ task, minutes }) => [
   `日程：${taskTitle(task)}`,
   `时间：${taskTimeLabel(task)}`,
   `说明：${taskDescriptionLabel(task)}`,
-  `提醒：将在 ${minutes} 分钟后开始`
+  `提醒：将在 ${minutes} 分钟后${taskValue(task, 'due_at', 'dueAt') ? '到期' : '开始'}`
 ].join('\n');
 
 export const conflictNotificationBody = ({ actor, type, count, startAt, endAt, tasks }) => {

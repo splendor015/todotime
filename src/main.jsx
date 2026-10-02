@@ -56,15 +56,16 @@ const monthGridRange = (date) => {
   return { start, end, count };
 };
 const shiftMonth = (date, amount) => new Date(date.getFullYear(), date.getMonth() + amount, 1);
-const taskDayKey = (task) => task.allDay && !task.recurrence ? task.occurrenceDate || task.taskDate : (task.startAt ? dateKey(new Date(task.startAt)) : task.taskDate || task.occurrenceDate);
+const taskDayKey = (task) => task.allDay && !task.recurrence ? task.occurrenceDate || task.taskDate : (task.startAt ? dateKey(new Date(task.startAt)) : task.dueAt ? dateKey(new Date(task.dueAt)) : task.taskDate || task.occurrenceDate);
 const SHARED_TASK_COLOR = '#7468b2';
 const taskColor = (task) => task.assignment === 'both' ? SHARED_TASK_COLOR : (task.ownerColor || '#267e77');
+const isOverdue = task => task.dueAt && task.status !== 'done' && new Date(task.dueAt).getTime() < Date.now();
 const assignmentLabel = (assignment) => assignment === 'both' ? '共同负责' : assignment === 'partner' ? '对方负责' : '我负责';
 const taskDateLabel = (task) => {
   const day = taskDayKey(task);
   const date = day ? parseKey(day) : null;
   const dateText = date ? `${date.getMonth() + 1}月${date.getDate()}日` : '未安排日期';
-  const timeText = task.allDay ? '全天' : task.startAt ? chinaTime(new Date(task.startAt)) : '待安排';
+  const timeText = task.allDay ? '全天' : task.dueAt ? `${chinaTime(new Date(task.dueAt))} 截止` : task.startAt ? chinaTime(new Date(task.startAt)) : '待安排';
   return `${dateText} · ${timeText}`;
 };
 
@@ -139,11 +140,11 @@ function TaskModal({ task, users, currentUserId, onClose, onSaved, onDeleted, to
   const creator = users.find(user => user.id === (task?.ownerId || currentUserId));
   const otherMember = users.find(user => user.id !== creator?.id);
   const initial = useMemo(() => {
-    const start = task?.startAt ? new Date(task.startAt) : null; const end = task?.endAt ? new Date(task.endAt) : null;
+    const start = task?.startAt ? new Date(task.startAt) : null; const end = task?.endAt ? new Date(task.endAt) : null; const due = task?.dueAt ? new Date(task.dueAt) : null;
     return {
-      title: task?.isPrivateMasked ? '' : (task?.title || ''), description: task?.description || '', date: start ? dateKey(start) : task?.occurrenceDate || task?.taskDate || task?.date || dateKey(new Date()),
+      title: task?.isPrivateMasked ? '' : (task?.title || ''), description: task?.description || '', type: task?.dueAt ? 'deadline' : task?.allDay ? 'allDay' : 'timed', date: due ? dateKey(due) : start ? dateKey(start) : task?.occurrenceDate || task?.taskDate || task?.date || dateKey(new Date()),
       endDate: task?.endDate || (end ? dateKey(end) : (task?.occurrenceDate || task?.taskDate || task?.date || (start ? dateKey(start) : dateKey(new Date())))),
-      start: task?.start || (start ? chinaTime(start) : ''), end: task?.end || (end ? chinaTime(end) : ''), allDay: task?.allDay || false,
+      start: task?.start || (start ? chinaTime(start) : ''), end: task?.end || (end ? chinaTime(end) : ''), deadlineTime: due ? chinaTime(due) : '', allDay: task?.allDay || false,
       priority: task?.priority || 'normal', tags: (task?.tags || []).join(', '), visibility: task?.visibility || 'shared', assignment: task?.assignment || 'owner',
       backgroundSchedule: task?.backgroundSchedule || false, ignoreDayConflicts: task?.ignoreDayConflicts || false,
       reminderMinutes: task?.reminderMinutes ?? (task?.id ? '' : 30),
@@ -156,9 +157,11 @@ function TaskModal({ task, users, currentUserId, onClose, onSaved, onDeleted, to
   const set = (key, value) => setForm(f => ({ ...f, [key]: value }));
   const save = async (e) => {
     e?.preventDefault(); if (!form.title.trim() && form.visibility !== 'private') return toast('请先填写任务标题');
+    if (form.type === 'deadline' && !form.deadlineTime) return toast('请先填写截止时间');
     setSaving(true);
     const recurrence = form.recurrence !== 'none' ? { frequency: form.recurrence, interval: Number(form.interval) || 1, until: form.recurrenceUntil || null } : null;
-    const payload = { title: form.visibility === 'private' && !form.title.trim() ? '私人安排' : form.title, description: form.description, startAt: form.allDay ? isoAt(form.date, '00:00') : (form.start ? isoAt(form.date, form.start) : null), endAt: form.allDay ? isoAt(form.endDate || form.date, '23:59') : (form.end ? isoAt(form.endDate || form.date, form.end) : null), taskDate: form.date, allDay: form.allDay, backgroundSchedule: form.allDay && form.backgroundSchedule, ignoreDayConflicts: form.allDay && form.backgroundSchedule && form.ignoreDayConflicts, reminderMinutes: !form.allDay && form.start && form.reminderMinutes !== '' ? Number(form.reminderMinutes) : null, priority: form.priority, tags: form.tags.split(',').map(t => t.trim()).filter(Boolean), visibility: form.visibility, assignment: form.assignment, recurrence, scope, occurrenceDate: task?.occurrenceDate };
+    const deadline = form.type === 'deadline'; const allDay = form.type === 'allDay';
+    const payload = { title: form.visibility === 'private' && !form.title.trim() ? '私人安排' : form.title, description: form.description, startAt: allDay ? isoAt(form.date, '00:00') : (!deadline && form.start ? isoAt(form.date, form.start) : null), endAt: allDay ? isoAt(form.endDate || form.date, '23:59') : (!deadline && form.end ? isoAt(form.endDate || form.date, form.end) : null), dueAt: deadline && form.deadlineTime ? isoAt(form.date, form.deadlineTime) : null, taskDate: form.date, allDay, backgroundSchedule: allDay && form.backgroundSchedule, ignoreDayConflicts: allDay && form.backgroundSchedule && form.ignoreDayConflicts, reminderMinutes: !allDay && (deadline ? form.deadlineTime : form.start) && form.reminderMinutes !== '' ? Number(form.reminderMinutes) : null, priority: form.priority, tags: form.tags.split(',').map(t => t.trim()).filter(Boolean), visibility: form.visibility, assignment: form.assignment, recurrence, scope, occurrenceDate: task?.occurrenceDate };
     try { const data = await api(isEdit ? `/tasks/${task.id}` : '/tasks', { method: isEdit ? 'PUT' : 'POST', body: JSON.stringify(payload) }); onSaved(data.task, data); toast(saveMessage(data, isEdit ? '日程已更新' : '日程已添加')); onClose(); }
     catch (err) { toast(err.message); } finally { setSaving(false); }
   };
@@ -170,11 +173,13 @@ function TaskModal({ task, users, currentUserId, onClose, onSaved, onDeleted, to
     {tab === 'details' ? <form className="drawer-body" onSubmit={save}>
       <label className="label-block">标题<input autoFocus={!isEdit} placeholder="输入标题" value={form.title} onChange={e => set('title', e.target.value)} /></label>
       <label className="label-block">备注<textarea rows="3" placeholder="添加一些上下文…" value={form.description} onChange={e => set('description', e.target.value)} /></label>
-      <div className="form-grid"><label>开始日期<input type="date" value={form.date} onChange={e => set('date', e.target.value)} /></label><label>结束日期<input type="date" value={form.endDate} min={form.date} onChange={e => set('endDate', e.target.value)} /></label></div>
-      <label className="checkbox-line"><input type="checkbox" checked={form.allDay} onChange={e => set('allDay', e.target.checked)} /> 全天任务</label>
-      {form.allDay && <div className="background-options"><label className="checkbox-line"><input type="checkbox" checked={form.backgroundSchedule} onChange={e => { set('backgroundSchedule', e.target.checked); if (!e.target.checked) set('ignoreDayConflicts', false); }} /> 多日背景安排</label>{form.backgroundSchedule && <><p>日历会在覆盖日期铺浅色底，其他任务仍显示在上层。</p><label className="checkbox-line"><input type="checkbox" checked={form.ignoreDayConflicts} onChange={e => set('ignoreDayConflicts', e.target.checked)} /> 忽略这条安排与当天任务的冲突提示</label>{form.ignoreDayConflicts && <p>仅忽略这条背景安排；当天其他任务之间仍会正常检查。</p>}</>}</div>}
-      {!form.allDay && <div className="form-grid"><label>开始时间<input type="time" value={form.start} onChange={e => set('start', e.target.value)} /></label><label>结束时间<input type="time" value={form.end} onChange={e => set('end', e.target.value)} /></label></div>}
-      {!form.allDay && <label className="label-block">微信提醒<select value={form.reminderMinutes} disabled={!form.start} onChange={e => set('reminderMinutes', e.target.value)}><option value="">不提醒</option><option value="10">提前 10 分钟</option><option value="30">提前 30 分钟</option><option value="60">提前 60 分钟</option></select>{!form.start && <small className="field-hint">设置开始时间后才能发送临近提醒</small>}</label>}
+      <label className="label-block">类型<select value={form.type} onChange={e => set('type', e.target.value)}><option value="timed">时间段</option><option value="deadline">截止任务</option><option value="allDay">全天任务</option></select></label>
+      {form.type !== 'allDay' && <div className="form-grid"><label>{form.type === 'deadline' ? '截止日期' : '开始日期'}<input type="date" value={form.date} onChange={e => set('date', e.target.value)} /></label>{form.type === 'timed' && <label>结束日期<input type="date" value={form.endDate} min={form.date} onChange={e => set('endDate', e.target.value)} /></label>}</div>}
+      {form.type === 'allDay' && <div className="form-grid"><label>开始日期<input type="date" value={form.date} onChange={e => set('date', e.target.value)} /></label><label>结束日期<input type="date" value={form.endDate} min={form.date} onChange={e => set('endDate', e.target.value)} /></label></div>}
+      {form.type === 'allDay' && <div className="background-options"><label className="checkbox-line"><input type="checkbox" checked={form.backgroundSchedule} onChange={e => { set('backgroundSchedule', e.target.checked); if (!e.target.checked) set('ignoreDayConflicts', false); }} /> 多日背景安排</label>{form.backgroundSchedule && <><p>日历会在覆盖日期铺浅色底，其他任务仍显示在上层。</p><label className="checkbox-line"><input type="checkbox" checked={form.ignoreDayConflicts} onChange={e => set('ignoreDayConflicts', e.target.checked)} /> 忽略这条安排与当天任务的冲突提示</label>{form.ignoreDayConflicts && <p>仅忽略这条背景安排；当天其他任务之间仍会正常检查。</p>}</>}</div>}
+      {form.type === 'deadline' && <label className="label-block">截止时间<input type="time" value={form.deadlineTime} onChange={e => set('deadlineTime', e.target.value)} /><small className="field-hint">只占用一个时间点，不计入时间重叠检查</small></label>}
+      {form.type === 'timed' && <div className="form-grid"><label>开始时间<input type="time" value={form.start} onChange={e => set('start', e.target.value)} /></label><label>结束时间<input type="time" value={form.end} onChange={e => set('end', e.target.value)} /></label></div>}
+      {form.type !== 'allDay' && <label className="label-block">微信提醒<select value={form.reminderMinutes} disabled={form.type === 'deadline' ? !form.deadlineTime : !form.start} onChange={e => set('reminderMinutes', e.target.value)}><option value="">不提醒</option><option value="10">提前 10 分钟</option><option value="30">提前 30 分钟</option><option value="60">提前 60 分钟</option></select>{!(form.type === 'deadline' ? form.deadlineTime : form.start) && <small className="field-hint">设置时间后才能发送临近提醒</small>}</label>}
       <div className="section-divider" />
       <div className="form-grid"><label>优先级<select value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label><label>负责对象<select value={form.assignment} onChange={e => set('assignment', e.target.value)}><option value="owner">{creator?.displayName || '创建者'}负责</option><option value="partner">{otherMember?.displayName || '另一位成员'}负责</option><option value="both">共同负责</option></select></label></div>
       <div className="label-block tag-picker-label">标签<div className="tag-presets">{TAG_PRESETS.map(tag => { const selected = form.tags.split(',').map(value => value.trim()).includes(tag.name); return <button type="button" key={tag.name} className={'tag-preset' + (selected ? ' selected' : '')} style={tagStyle(tag.name)} aria-pressed={selected} onClick={() => { const values = form.tags.split(',').map(value => value.trim()).filter(Boolean); set('tags', selected ? values.filter(value => value !== tag.name).join(', ') : [...values, tag.name].join(', ')); }}>{tag.name}</button>; })}</div><div className="input-with-icon"><Tag size={15} /><input placeholder="也可输入自定义标签，用逗号分隔" value={form.tags} onChange={e => set('tags', e.target.value)} /></div></div>
@@ -187,7 +192,7 @@ function TaskModal({ task, users, currentUserId, onClose, onSaved, onDeleted, to
 }
 
 function RecycleBin({ tasks, onRestore, onPermanent, onClose }) {
-  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><aside className="task-drawer compact-drawer"><header className="drawer-head"><div><span className="drawer-kicker">已删除日程</span><h2>回收站</h2></div><button className="icon-button" onClick={onClose}><X size={19} /></button></header><div className="trash-note">删除的日程会保留 30 天，恢复后会重新出现在日历中。</div><div className="trash-list">{tasks.length ? tasks.map(t => <div className="trash-item" key={t.id}><div><strong>{t.title}</strong><small>{t.startAt ? new Date(t.startAt).toLocaleDateString('zh-CN') : '无日期'} · {t.ownerName}</small></div><div><button className="icon-button" title="恢复" onClick={() => onRestore(t.id)}><RotateCcw size={16} /></button><button className="icon-button danger-icon" title="永久删除" onClick={() => onPermanent(t.id)}><Trash2 size={16} /></button></div></div>) : <div className="empty-comments"><Trash2 size={22} /><p>回收站是空的</p></div>}</div></aside></div>;
+  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><aside className="task-drawer compact-drawer"><header className="drawer-head"><div><span className="drawer-kicker">已删除日程</span><h2>回收站</h2></div><button className="icon-button" onClick={onClose}><X size={19} /></button></header><div className="trash-note">删除的日程会保留 30 天，恢复后会重新出现在日历中。</div><div className="trash-list">{tasks.length ? tasks.map(t => <div className="trash-item" key={t.id}><div><strong>{t.title}</strong><small>{(t.startAt || t.dueAt) ? new Date(t.startAt || t.dueAt).toLocaleDateString('zh-CN') : '无日期'} · {t.ownerName}</small></div><div><button className="icon-button" title="恢复" onClick={() => onRestore(t.id)}><RotateCcw size={16} /></button><button className="icon-button danger-icon" title="永久删除" onClick={() => onPermanent(t.id)}><Trash2 size={16} /></button></div></div>) : <div className="empty-comments"><Trash2 size={22} /><p>回收站是空的</p></div>}</div></aside></div>;
 }
 
 function Calendar({ tasks, current, onMove, onSelect, onNew, onComplete }) {
@@ -196,7 +201,8 @@ function Calendar({ tasks, current, onMove, onSelect, onNew, onComplete }) {
   const today = dateKey(new Date());
   const byDay = (key) => tasks.filter(t => taskDayKey(t) === key);
   const timed = (key) => byDay(key).filter(t => !t.allDay && t.startAt);
-  const unscheduled = (key) => byDay(key).filter(t => t.allDay || !t.startAt);
+  const deadlines = (key) => byDay(key).filter(t => !t.allDay && t.dueAt);
+  const unscheduled = (key) => byDay(key).filter(t => t.allDay || (!t.startAt && !t.dueAt));
   const backgroundsFor = key => byDay(key).filter(t => t.allDay && t.backgroundSchedule && taskDayKey(t) === key);
   const position = (t) => {
     const start = new Date(t.startAt); const end = t.endAt ? new Date(t.endAt) : new Date(start.getTime() + 45 * 60000);
@@ -205,12 +211,16 @@ function Calendar({ tasks, current, onMove, onSelect, onNew, onComplete }) {
     const height = Math.max(30, (durationMinutes / 60) * CALENDAR_HOUR_HEIGHT);
     return { top, height };
   };
+  const deadlinePosition = (t) => {
+    const minutes = chinaClockMinutes(new Date(t.dueAt));
+    return { top: ((minutes - CALENDAR_START_HOUR * 60) / 60) * CALENDAR_HOUR_HEIGHT };
+  };
   const drop = (e, key, hour) => { e.preventDefault(); const id = e.dataTransfer.getData('task'); if (id) { const task = tasks.find(t => t.occurrenceId === id || String(t.id) === id); if (task) onMove(task, key, hour); } };
   return <div className="calendar-wrap">
     <div className="calendar-toolbar"><div className="today-chip">{dateLabel(current)} – {dateLabel(days[6])}</div><div className="calendar-legend"><span><i className="legend-dot self" />我的安排</span><span><i className="legend-dot partner" />对方安排</span><span><i className="legend-dot shared" />共同负责</span></div></div>
     <div className="week-head"><div className="time-head"><Clock3 size={15} /></div>{days.map((day, i) => <div key={dateKey(day)} className={`day-head ${dateKey(day) === today ? 'is-today' : ''}`}><span>周{weekday[i]}</span><b>{day.getDate()}</b></div>)}</div>
     <div className="unplanned-row"><div className="time-head">待安排</div>{days.map(day => { const key = dateKey(day); const backgrounds = backgroundsFor(key); const background = backgrounds[0]; return <div key={key} className="unplanned-cell" style={background ? { backgroundColor: tagStyle(background.tags?.[0] || '').backgroundColor } : undefined} onDragOver={e => e.preventDefault()} onDrop={e => drop(e, key, null)}>{unscheduled(key).filter(t => !t.backgroundSchedule).map(t => <TaskPill key={t.occurrenceId} task={t} onSelect={onSelect} onComplete={onComplete} />)}{backgrounds.map(task => <TaskPill key={task.occurrenceId} task={task} onSelect={onSelect} onComplete={onComplete} />)}</div>; })}</div>
-    <div className="calendar-scroll"><div className="time-axis">{hours.map(h => <div key={h}>{timeLabel(h)}</div>)}</div><div className="grid-area">{days.map(day => { const key = dateKey(day); const backgrounds = backgroundsFor(key); const background = backgrounds[0]; return <div className={`day-column ${key === today ? 'today-column' : ''} ${background ? 'has-background-schedule' : ''}`} style={background ? { '--background-color': tagStyle(background.tags?.[0] || '').backgroundColor } : undefined} key={key}>{hours.map(h => <div className="hour-cell" key={h} onDragOver={e => e.preventDefault()} onDrop={e => drop(e, key, h)} onDoubleClick={() => onNew(key, `${pad(h)}:00`)} />)}{timed(key).map(t => <TimedTask key={t.occurrenceId} task={t} position={position(t)} onSelect={onSelect} onComplete={onComplete} />)}</div>; })}</div></div>
+    <div className="calendar-scroll"><div className="time-axis">{hours.map(h => <div key={h}>{timeLabel(h)}</div>)}</div><div className="grid-area">{days.map(day => { const key = dateKey(day); const backgrounds = backgroundsFor(key); const background = backgrounds[0]; return <div className={`day-column ${key === today ? 'today-column' : ''} ${background ? 'has-background-schedule' : ''}`} style={background ? { '--background-color': tagStyle(background.tags?.[0] || '').backgroundColor } : undefined} key={key}>{hours.map(h => <div className="hour-cell" key={h} onDragOver={e => e.preventDefault()} onDrop={e => drop(e, key, h)} onDoubleClick={() => onNew(key, `${pad(h)}:00`)} />)}{timed(key).map(t => <TimedTask key={t.occurrenceId} task={t} position={position(t)} onSelect={onSelect} onComplete={onComplete} />)}{deadlines(key).map(t => <DeadlineTask key={t.occurrenceId} task={t} position={deadlinePosition(t)} onSelect={onSelect} onComplete={onComplete} />)}</div>; })}</div></div>
   </div>;
 }
 
@@ -220,8 +230,8 @@ function MonthCalendar({ tasks, current, onSelect, onNew, onComplete }) {
   const today = dateKey(new Date());
   const monthKey = `${current.getFullYear()}-${current.getMonth()}`;
   const byDay = (key) => tasks.filter(task => taskDayKey(task) === key).sort((a, b) => {
-    const aTime = a.startAt ? chinaClockMinutes(new Date(a.startAt)) : -1;
-    const bTime = b.startAt ? chinaClockMinutes(new Date(b.startAt)) : -1;
+    const aTime = a.startAt ? chinaClockMinutes(new Date(a.startAt)) : a.dueAt ? chinaClockMinutes(new Date(a.dueAt)) : -1;
+    const bTime = b.startAt ? chinaClockMinutes(new Date(b.startAt)) : b.dueAt ? chinaClockMinutes(new Date(b.dueAt)) : -1;
     return aTime - bTime;
   });
   return <div className="month-view">
@@ -238,8 +248,8 @@ function MonthCalendar({ tasks, current, onSelect, onNew, onComplete }) {
 }
 
 function MonthTask({ task, onSelect, onComplete }) {
-  const time = task.allDay ? '全天' : (task.startAt ? chinaTime(new Date(task.startAt)) : '待安排');
-  return <div className={`month-task ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ '--task-color': taskColor(task) }} onClick={() => onSelect(task)}>
+  const time = task.allDay ? '全天' : (task.dueAt ? `${chinaTime(new Date(task.dueAt))} 截止` : (task.startAt ? chinaTime(new Date(task.startAt)) : '待安排'));
+  return <div className={`month-task ${task.status === 'done' ? 'done' : ''} ${isOverdue(task) ? 'overdue' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ '--task-color': taskColor(task) }} onClick={() => onSelect(task)}>
     <button onClick={event => { event.stopPropagation(); onComplete(task); }} className="month-check">{task.status === 'done' && <Check size={9} />}</button>
     <span className="month-task-time">{time}</span><strong>{task.title}</strong>{task.tags?.slice(0, 2).map(tag => <em key={tag} className="task-tag" style={tagStyle(tag)}>{tag}</em>)}<ScheduleBadge task={task} />{task.priority === 'high' && <Flag size={10} className="priority-flag" />}
   </div>;
@@ -247,6 +257,7 @@ function MonthTask({ task, onSelect, onComplete }) {
 
 function TaskPill({ task, onSelect, onComplete }) { return <div className={`task-pill ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ '--task-color': taskColor(task) }} draggable onDragStart={e => e.dataTransfer.setData('task', task.occurrenceId)} onClick={() => onSelect(task)}><button onClick={e => { e.stopPropagation(); onComplete(task); }} className="check-button">{task.status === 'done' && <Check size={11} />}</button><span>{task.title}</span>{task.tags?.slice(0, 1).map(tag => <em key={tag} className="task-tag" style={tagStyle(tag)}>{tag}</em>)}<ScheduleBadge task={task} />{task.priority === 'high' && <Flag size={11} className="priority-flag" />}</div>; }
 function TimedTask({ task, position, onSelect, onComplete }) { return <div className={`timed-task ${task.status === 'done' ? 'done' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ top: position.top, height: position.height, '--task-color': taskColor(task) }} draggable onDragStart={e => e.dataTransfer.setData('task', task.occurrenceId)} onClick={() => onSelect(task)}><div className="timed-task-head"><button onClick={e => { e.stopPropagation(); onComplete(task); }} className="check-button">{task.status === 'done' && <Check size={11} />}</button><strong>{task.title}</strong><ScheduleBadge task={task} />{task.priority === 'high' && <Flag size={11} className="priority-flag" />}<MoreHorizontal size={14} /></div><span>{task.startAt && chinaTime(new Date(task.startAt))}{task.endAt && ` – ${chinaTime(new Date(task.endAt))}`}</span>{task.tags?.length > 0 && <div className="timed-tags">{task.tags.slice(0, 2).map(tag => <em key={tag} className="task-tag" style={tagStyle(tag)}>{tag}</em>)}</div>}</div>; }
+function DeadlineTask({ task, position, onSelect, onComplete }) { return <div className={`deadline-task ${task.status === 'done' ? 'done' : ''} ${isOverdue(task) ? 'overdue' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''}`} style={{ top: position.top, '--task-color': taskColor(task) }} draggable onDragStart={e => e.dataTransfer.setData('task', task.occurrenceId)} onClick={() => onSelect(task)}><button onClick={e => { e.stopPropagation(); onComplete(task); }} className="check-button">{task.status === 'done' && <Check size={11} />}</button><strong>◆ {task.title}</strong><span>{chinaTime(new Date(task.dueAt))} 截止</span>{isOverdue(task) && <TriangleAlert size={11} />}{task.priority === 'high' && <Flag size={11} className="priority-flag" />}</div>; }
 
 function PriorityPanel({ tasks, onSelect }) {
   const priorityTasks = [...tasks]
@@ -382,12 +393,13 @@ function App() {
   const saveTask = (_task, data) => { setScheduleNotice(data?.checkedRange ? { conflicts: data.conflicts || [], checkedRange: data.checkedRange } : null); load(current).catch(err => notify(err.message)); };
   const moveTask = async (task, key, hour) => {
     if (task.isPrivateMasked) return notify('私人安排只能由创建者调整');
-    const start = new Date(task.startAt || `${key}T09:00:00+08:00`);
+    const start = new Date(task.startAt || task.dueAt || `${key}T09:00:00+08:00`);
     const startAt = hour === null ? null : isoAt(key, `${pad(hour)}:${pad(chinaClockMinutes(start) % 60)}`);
+    const dueAt = task.dueAt ? startAt : null;
     const duration = task.startAt && task.endAt ? new Date(task.endAt) - new Date(task.startAt) : null;
     const endAt = startAt && duration !== null ? new Date(new Date(startAt).getTime() + duration).toISOString() : null;
     try {
-      const data = await api(`/tasks/${task.id}`, { method: 'PUT', body: JSON.stringify({ startAt, endAt, taskDate: key, allDay: false, scope: task.recurrence ? 'this' : 'all', occurrenceDate: task.occurrenceDate }) });
+      const data = await api(`/tasks/${task.id}`, { method: 'PUT', body: JSON.stringify({ startAt: task.dueAt ? null : startAt, endAt: task.dueAt ? null : endAt, dueAt, taskDate: key, allDay: false, scope: task.recurrence ? 'this' : 'all', occurrenceDate: task.occurrenceDate }) });
       saveTask(data.task, data); notify(saveMessage(data, '时间已调整'));
     } catch (err) { notify(err.message); }
   };
