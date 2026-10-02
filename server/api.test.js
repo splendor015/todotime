@@ -40,12 +40,16 @@ test('conflict API, notifications, privacy and recurrence lifecycle', async () =
     assert.equal((await call(`/tasks/${createdNotice.taskId}`, b)).task.title, 'alpha event', 'notification target opens without a calendar date range');
     const deadline = await create(a, 'submit homework', { taskDate: '2026-09-23', startAt: null, endAt: null, dueAt: at('2026-09-23', '18:00'), reminderMinutes: 30 });
     assert.equal(deadline.task.isDeadline, true);
+    assert.equal(deadline.task.itemType, 'task');
     assert.equal(deadline.task.startAt, null);
     assert.equal(deadline.task.endAt, null);
     assert.equal(Date.parse(deadline.task.dueAt), Date.parse(at('2026-09-23', '18:00')));
     const deadlineView = (await view(a, '2026-09-23')).tasks.find(task => task.id === deadline.task.id);
     assert.equal(deadlineView.dueAt, deadline.task.dueAt);
     assert.equal((await call(`/tasks/${deadline.task.id}`, b)).task.dueAt, deadline.task.dueAt);
+    const taskOnlyView = await call('/tasks?from=2026-09-23&to=2026-09-23&itemType=task', a);
+    assert.ok(taskOnlyView.tasks.some(task => task.id === deadline.task.id));
+    assert.ok(!taskOnlyView.tasks.some(task => task.id === first.task.id));
     await assert.rejects(call(`/tasks/${first.task.id}`), /401/);
     await assert.rejects(call('/tasks/999999', b), /404/);
     const postedComment = await call(`/tasks/${first.task.id}/comments`, b, 'POST', { body: '我会参加' });

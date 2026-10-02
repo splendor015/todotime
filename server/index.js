@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   end_at TEXT,
   due_at TEXT,
   task_date TEXT,
+  item_type TEXT NOT NULL DEFAULT 'schedule',
   all_day INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'open',
   priority TEXT NOT NULL DEFAULT 'normal',
@@ -109,6 +110,8 @@ try { db.exec('ALTER TABLE tasks ADD COLUMN background_schedule INTEGER NOT NULL
 try { db.exec('ALTER TABLE tasks ADD COLUMN ignore_day_conflicts INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
 try { db.exec('ALTER TABLE tasks ADD COLUMN reminder_minutes INTEGER'); } catch { /* already exists */ }
 try { db.exec('ALTER TABLE tasks ADD COLUMN due_at TEXT'); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE tasks ADD COLUMN item_type TEXT NOT NULL DEFAULT 'schedule'"); } catch { /* already exists */ }
+db.prepare("UPDATE tasks SET item_type='task' WHERE item_type='schedule' AND due_at IS NOT NULL").run();
 try { db.exec("ALTER TABLE notifications ADD COLUMN task_links TEXT NOT NULL DEFAULT '[]'"); } catch { /* already exists */ }
 
 const purgeExpiredTrash = () => {
@@ -166,6 +169,8 @@ const publicTask = (t, currentUserId, occurrenceDate = null) => {
     startAt: isPrivate ? t.start_at : t.start_at,
     endAt: isPrivate ? t.end_at : t.end_at,
     dueAt: isPrivate ? t.due_at : t.due_at,
+    itemType: t.item_type || (t.due_at ? 'task' : 'schedule'),
+    isTask: (t.item_type || (t.due_at ? 'task' : 'schedule')) === 'task',
     taskDate: t.task_date || occurrenceDate || (t.start_at ? t.start_at.slice(0, 10) : t.due_at ? t.due_at.slice(0, 10) : null),
     allDay: Boolean(t.all_day),
     isDeadline: Boolean(t.due_at),
@@ -479,6 +484,8 @@ app.use('/api/tasks', (req, res, next) => {
   if (req.body?.startAt && req.body?.endAt && Date.parse(req.body.endAt) <= Date.parse(req.body.startAt)) return res.status(400).json({ error: '结束时间须晚于开始时间' });
   if (req.body?.dueAt && (req.body.startAt || req.body.endAt || req.body.allDay)) return res.status(400).json({ error: '截止任务不能同时设置时间段或全天' });
   if (req.body?.startAt && req.body?.dueAt) return res.status(400).json({ error: '请在时间段和截止时间中选择一种' });
+  if (req.body?.itemType !== undefined && !['task', 'schedule'].includes(req.body.itemType)) return res.status(400).json({ error: '无效的项目类型' });
+  if (req.body?.itemType === 'task' && !req.body?.dueAt) return res.status(400).json({ error: '任务必须填写截止时间' });
   if (req.body?.reminderMinutes !== undefined && req.body.reminderMinutes !== null && ![10, 30, 60].includes(Number(req.body.reminderMinutes))) return res.status(400).json({ error: '提醒时间仅支持提前 10、30 或 60 分钟' });
   const json = res.json.bind(res);
   res.json = payload => {
@@ -541,7 +548,8 @@ app.get('/api/tasks', auth, (req, res) => {
   const validDay = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00+08:00`));
   if (!validDay(from) || !validDay(to) || to < from || Date.parse(to) - Date.parse(from) > 366 * 86400000) return res.status(400).json({ error: '请查询一年以内的有效日期范围' });
   const includeDeleted = req.query.deleted === '1';
-  const rows = db.prepare(`SELECT t.*, u.display_name AS owner_name, u.color AS owner_color FROM tasks t JOIN users u ON u.id=t.owner_id WHERE ((?=1 AND t.deleted_at IS NOT NULL) OR (?=0 AND t.deleted_at IS NULL)) ORDER BY COALESCE(t.start_at,'9999')`).all(includeDeleted ? 1 : 0, includeDeleted ? 1 : 0);
+  const itemType = req.query.itemType === 'task' || req.query.itemType === 'schedule' ? req.query.itemType : '';
+  const rows = db.prepare(`SELECT t.*, u.display_name AS owner_name, u.color AS owner_color FROM tasks t JOIN users u ON u.id=t.owner_id WHERE ((?=1 AND t.deleted_at IS NOT NULL) OR (?=0 AND t.deleted_at IS NULL)) AND (?='' OR t.item_type=?) ORDER BY COALESCE(t.start_at,t.due_at,'9999')`).all(includeDeleted ? 1 : 0, includeDeleted ? 1 : 0, itemType, itemType);
   const tasks = includeDeleted ? rows.map((r) => publicTask(r, req.user.id)) : expandTasks(rows, from, to, req.user.id);
   res.json({ tasks, conflicts: includeDeleted ? [] : detectConflicts(tasks, db.prepare('SELECT id FROM users').all().map(u => u.id), from, to) });
 });
@@ -564,7 +572,8 @@ app.post('/api/tasks', auth, (req, res) => {
   if (!b.title?.trim()) return res.status(400).json({ error: '请输入任务标题' });
   const recurrence = b.recurrence ? JSON.stringify(b.recurrence) : null;
   const reminderMinutes = !b.allDay && (b.startAt || b.dueAt) && [10, 30, 60].includes(Number(b.reminderMinutes)) ? Number(b.reminderMinutes) : null;
-  const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,due_at,task_date,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,reminder_minutes,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(req.user.id, b.title.trim(), b.description || '', b.startAt || null, b.endAt || null, b.dueAt || null, b.taskDate || (b.startAt ? b.startAt.slice(0, 10) : b.dueAt ? b.dueAt.slice(0, 10) : null), b.allDay ? 1 : 0, b.priority || 'normal', JSON.stringify(b.tags || []), b.visibility === 'private' ? 'private' : 'shared', b.assignment || 'owner', b.allDay && b.backgroundSchedule ? 1 : 0, b.allDay && b.ignoreDayConflicts ? 1 : 0, reminderMinutes, recurrence);
+  const itemType = b.itemType === 'schedule' ? 'schedule' : (b.itemType === 'task' || b.dueAt ? 'task' : 'schedule');
+  const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,due_at,task_date,item_type,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,reminder_minutes,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(req.user.id, b.title.trim(), b.description || '', b.startAt || null, b.endAt || null, b.dueAt || null, b.taskDate || (b.startAt ? b.startAt.slice(0, 10) : b.dueAt ? b.dueAt.slice(0, 10) : null), itemType, b.allDay ? 1 : 0, b.priority || 'normal', JSON.stringify(b.tags || []), b.visibility === 'private' ? 'private' : 'shared', b.assignment || 'owner', b.allDay && b.backgroundSchedule ? 1 : 0, b.allDay && b.ignoreDayConflicts ? 1 : 0, reminderMinutes, recurrence);
   const row = taskRow(info.lastInsertRowid);
   notifyOther(req.user.id, 'task_created', '新的日程安排', taskCreatedBody({ actor: actorDisplayName(req.user.id), task: row }), row.id, row);
   res.status(201).json({ task: publicTask(row, req.user.id) });
@@ -581,7 +590,7 @@ app.put('/api/tasks/:id', auth, (req, res) => {
     const previousOverrides = JSON.parse(prior?.override_json || '{}');
     beforeNotification = { ...beforeNotification, ...previousOverrides };
     const overrides = { ...previousOverrides };
-    for (const [input, column] of Object.entries({ title: 'title', description: 'description', startAt: 'start_at', endAt: 'end_at', dueAt: 'due_at', taskDate: 'task_date', priority: 'priority', assignment: 'assignment', visibility: 'visibility', reminderMinutes: 'reminder_minutes' })) {
+    for (const [input, column] of Object.entries({ title: 'title', description: 'description', startAt: 'start_at', endAt: 'end_at', dueAt: 'due_at', taskDate: 'task_date', itemType: 'item_type', priority: 'priority', assignment: 'assignment', visibility: 'visibility', reminderMinutes: 'reminder_minutes' })) {
       if (b[input] !== undefined) overrides[column] = b[input];
     }
     if (b.allDay !== undefined) overrides.all_day = b.allDay ? 1 : 0;
@@ -600,7 +609,7 @@ app.put('/api/tasks/:id', auth, (req, res) => {
     const shifted = value => value ? new Date(Date.parse(value) + delta).toISOString() : null;
     const allDay = b.allDay === undefined ? row.all_day : (b.allDay ? 1 : 0);
     const reminderMinutes = allDay ? null : (b.reminderMinutes === undefined ? row.reminder_minutes : b.reminderMinutes);
-    const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,due_at,task_date,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,reminder_minutes,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(row.owner_id, b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? shifted(row.start_at) : b.startAt, b.endAt === undefined ? shifted(row.end_at) : b.endAt, b.dueAt === undefined ? shifted(row.due_at) : b.dueAt, b.taskDate ?? b.occurrenceDate ?? row.task_date, allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, reminderMinutes, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null));
+    const info = db.prepare(`INSERT INTO tasks (owner_id,title,description,start_at,end_at,due_at,task_date,item_type,all_day,priority,tags,visibility,assignment,background_schedule,ignore_day_conflicts,reminder_minutes,recurrence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(row.owner_id, b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? shifted(row.start_at) : b.startAt, b.endAt === undefined ? shifted(row.end_at) : b.endAt, b.dueAt === undefined ? shifted(row.due_at) : b.dueAt, b.taskDate ?? b.occurrenceDate ?? row.task_date, b.itemType === 'schedule' ? 'schedule' : (b.itemType === 'task' || b.dueAt ? 'task' : (row.item_type || 'schedule')), allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, reminderMinutes, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null));
     // Move future exceptions with the series to avoid stale, duplicate occurrences.
     db.prepare('UPDATE task_exceptions SET task_id=? WHERE task_id=? AND occurrence_date>=?').run(info.lastInsertRowid, id, b.occurrenceDate);
     const newRow = taskRow(info.lastInsertRowid);
@@ -616,7 +625,7 @@ app.put('/api/tasks/:id', auth, (req, res) => {
     }
     const allDay = b.allDay === undefined ? row.all_day : (b.allDay ? 1 : 0);
     const reminderMinutes = allDay ? null : (b.reminderMinutes === undefined ? row.reminder_minutes : b.reminderMinutes);
-    db.prepare(`UPDATE tasks SET title=?,description=?,start_at=?,end_at=?,due_at=?,task_date=?,all_day=?,priority=?,tags=?,visibility=?,assignment=?,background_schedule=?,ignore_day_conflicts=?,reminder_minutes=?,recurrence=?,status=?,updated_at=? WHERE id=?`).run(b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? row.start_at : (b.startAt || null), b.endAt === undefined ? row.end_at : (b.endAt || null), b.dueAt === undefined ? row.due_at : (b.dueAt || null), b.taskDate ?? (b.startAt ? formatLocalDate(new Date(b.startAt)) : b.dueAt ? formatLocalDate(new Date(b.dueAt)) : row.task_date), allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, reminderMinutes, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null), b.status ?? row.status, nowIso(), id);
+    db.prepare(`UPDATE tasks SET title=?,description=?,start_at=?,end_at=?,due_at=?,task_date=?,item_type=?,all_day=?,priority=?,tags=?,visibility=?,assignment=?,background_schedule=?,ignore_day_conflicts=?,reminder_minutes=?,recurrence=?,status=?,updated_at=? WHERE id=?`).run(b.title ?? row.title, b.description ?? row.description, b.startAt === undefined ? row.start_at : (b.startAt || null), b.endAt === undefined ? row.end_at : (b.endAt || null), b.dueAt === undefined ? row.due_at : (b.dueAt || null), b.taskDate ?? (b.startAt ? formatLocalDate(new Date(b.startAt)) : b.dueAt ? formatLocalDate(new Date(b.dueAt)) : row.task_date), b.itemType === 'schedule' ? 'schedule' : (b.itemType === 'task' || b.dueAt ? 'task' : (row.item_type || 'schedule')), allDay, b.priority ?? row.priority, JSON.stringify(b.tags ?? JSON.parse(row.tags || '[]')), b.visibility ?? row.visibility, b.assignment ?? row.assignment, allDay ? (b.backgroundSchedule === undefined ? row.background_schedule : Number(Boolean(b.backgroundSchedule))) : 0, allDay ? (b.ignoreDayConflicts === undefined ? row.ignore_day_conflicts : Number(Boolean(b.ignoreDayConflicts))) : 0, reminderMinutes, b.recurrence === undefined ? row.recurrence : (b.recurrence ? JSON.stringify(b.recurrence) : null), b.status ?? row.status, nowIso(), id);
     afterNotification = taskAtOccurrence(taskRow(id), req.body?.occurrenceDate);
   }
   const updated = taskRow(id);
