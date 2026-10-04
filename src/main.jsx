@@ -251,7 +251,7 @@ function MonthCalendar({ tasks, current, onSelect, onNew, onComplete }) {
 
 function MonthTask({ task, onSelect, onComplete }) {
   const time = task.allDay ? '全天' : (task.dueAt ? `${chinaTime(new Date(task.dueAt))} 截止` : (task.startAt ? chinaTime(new Date(task.startAt)) : '待安排'));
-  return <div className={`month-task ${task.itemType === 'task' ? 'task-item' : 'schedule-item'} ${task.status === 'done' ? 'done' : ''} ${isOverdue(task) ? 'overdue' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ '--task-color': taskColor(task) }} onClick={() => onSelect(task)}>
+  return <div className={`month-task ${task.itemType === 'task' ? 'task-item' : 'calendar-schedule-item'} ${task.status === 'done' ? 'done' : ''} ${isOverdue(task) ? 'overdue' : ''} ${task.isPrivateMasked ? 'private' : ''} ${task.assignment === 'both' ? 'shared-task' : ''} ${task.scheduleType || ''}`} style={{ '--task-color': taskColor(task) }} onClick={() => onSelect(task)}>
     <button onClick={event => { event.stopPropagation(); onComplete(task); }} className="month-check">{task.status === 'done' && <Check size={9} />}</button>
     <span className="month-task-time">{time}</span><strong>{task.title}</strong>{task.tags?.slice(0, 2).map(tag => <em key={tag} className="task-tag" style={tagStyle(tag)}>{tag}</em>)}<ScheduleBadge task={task} />{task.priority === 'high' && <Flag size={10} className="priority-flag" />}
   </div>;
